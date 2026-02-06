@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use transformer_neo::db::TuffEngine;
 use transformer_neo::models::VerificationStatus;
 use transformer_neo::pipeline::{
-    ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier, IngestPipeline, LlmVerifier,
-    WebFetcher,
+    AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
+    IngestPipeline, LlmAbstractor, LlmVerifier, WebFetcher,
 };
 
 enum Verifier {
@@ -25,6 +25,26 @@ impl ClaimVerifier for Verifier {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,
+        }
+    }
+}
+
+enum Abstractor {
+    Dummy(DummyAbstractGenerator),
+    Llm(LlmAbstractor),
+}
+
+#[async_trait]
+impl AbstractGenerator for Abstractor {
+    async fn generate(
+        &self,
+        fragment: &str,
+        facts: &[transformer_neo::models::RequiredFact],
+        status: VerificationStatus,
+    ) -> anyhow::Result<transformer_neo::models::Abstract> {
+        match self {
+            Abstractor::Dummy(a) => a.generate(fragment, facts, status).await,
+            Abstractor::Llm(a) => a.generate(fragment, facts, status).await,
         }
     }
 }
@@ -62,11 +82,19 @@ async fn main() -> anyhow::Result<()> {
         _ => Verifier::Dummy(DummyVerifier),
     };
 
+    let abstractor = match env::var("OPENAI_API_KEY") {
+        Ok(key) if valid_api_key(&key) => {
+            let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+            Abstractor::Llm(LlmAbstractor::new(&key, &model))
+        }
+        _ => Abstractor::Dummy(DummyAbstractGenerator),
+    };
+
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
         fetcher: WebFetcher::new(),
         verifier,
-        generator: DummyAbstractGenerator,
+        generator: abstractor,
         db: engine,
     };
 
