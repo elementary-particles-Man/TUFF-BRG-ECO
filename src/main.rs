@@ -4,10 +4,10 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use transformer_neo::db::TuffEngine;
-use transformer_neo::models::VerificationStatus;
+use transformer_neo::models::{Claim, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
-    IngestPipeline, LlmAbstractor, LlmVerifier, WebFetcher,
+    GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier, WebFetcher,
 };
 
 enum Verifier {
@@ -74,22 +74,27 @@ async fn main() -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("invalid wal path"))?,
     )?;
 
-    let verifier = match env::var("OPENAI_API_KEY") {
-        Ok(key) if valid_api_key(&key) => {
-            let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-            Verifier::Llm(LlmVerifier::new(&key, &model))
-        }
+    let api_key = env::var("OPENAI_API_KEY").ok();
+    let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+
+    let verifier = match api_key.as_deref() {
+        Some(key) if valid_api_key(key) => Verifier::Llm(LlmVerifier::new(key, &model)),
         _ => Verifier::Dummy(DummyVerifier),
     };
 
-    let abstractor = match env::var("OPENAI_API_KEY") {
-        Ok(key) if valid_api_key(&key) => {
-            let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-            Abstractor::Llm(LlmAbstractor::new(&key, &model))
-        }
+    let abstractor = match api_key.as_deref() {
+        Some(key) if valid_api_key(key) => Abstractor::Llm(LlmAbstractor::new(key, &model)),
         _ => Abstractor::Dummy(DummyAbstractGenerator),
     };
 
+    let gap_resolver = match api_key.as_deref() {
+        Some(key) if valid_api_key(key) => Some(LlmGapResolver::new(key, &model)),
+        _ => None,
+    };
+
+    let fetcher = WebFetcher::new();
+
+    // Run pipeline
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
         fetcher: WebFetcher::new(),
@@ -98,12 +103,35 @@ async fn main() -> anyhow::Result<()> {
         db: engine,
     };
 
-    let ops = pipeline.ingest("高市早苗は首相である").await?;
+    let input = "高市早苗は首相である";
+    let ops = pipeline.ingest(input).await?;
     if let Some(op) = ops.first() {
         println!("op_id={}", op.op_id);
     }
 
     let all = pipeline.select_all()?;
     println!("stored={}", all.len());
+
+    // Gap resolver integration (mock internal state)
+    if let Some(resolver) = gap_resolver {
+        let internal_state = "Current Prime Minister is Shigeru Ishiba";
+        let facts = fetcher.fetch(input).await?;
+        let evidences: Vec<transformer_neo::models::Evidence> =
+            facts.iter().flat_map(|f| f.evidence.clone()).collect();
+
+        let claim = Claim {
+            statement: input.to_string(),
+            sources: Vec::new(),
+        };
+
+        if let Some(transition) = resolver
+            .resolve(&claim, internal_state, &evidences)
+            .await?
+        {
+            let json = serde_json::to_string(&transition)?;
+            println!("[TRANSITION RECORD GENERATED] {}", json);
+        }
+    }
+
     Ok(())
 }
