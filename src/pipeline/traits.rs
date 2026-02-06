@@ -1,4 +1,4 @@
-use crate::models::{Abstract, RequiredFact, VerificationStatus};
+use crate::models::{Abstract, Claim, Evidence, RequiredFact, Transition, VerificationStatus};
 use async_trait::async_trait;
 
 pub trait InputSplitter: Send + Sync {
@@ -27,4 +27,16 @@ pub trait AbstractGenerator: Send + Sync {
         facts: &[RequiredFact],
         status: VerificationStatus,
     ) -> anyhow::Result<Abstract>;
+}
+
+#[async_trait]
+pub trait GapResolver: Send + Sync {
+    /// Resolve the gap between internal knowledge and external evidence.
+    /// Returns a signed Transition if an explaining event is found.
+    async fn resolve(
+        &self,
+        claim: &Claim,
+        internal_state: &str,
+        external_evidence: &[Evidence],
+    ) -> anyhow::Result<Option<Transition>>;
 }
