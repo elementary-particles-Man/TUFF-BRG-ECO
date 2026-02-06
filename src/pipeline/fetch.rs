@@ -32,9 +32,11 @@ impl WebFetcher {
 impl FactFetcher for WebFetcher {
     async fn fetch(&self, _fragment: &str) -> anyhow::Result<Vec<RequiredFact>> {
         let url = Self::target_url()?;
-        let body = self.client.get(url.clone()).send().await?.text().await?;
+        let raw_html = self.client.get(url.clone()).send().await?.text().await?;
+        let clean_text = html2text::from_read(raw_html.as_bytes(), 80);
+
         let mut hasher = Sha256::new();
-        hasher.update(body.as_bytes());
+        hasher.update(raw_html.as_bytes());
         let sha256_hex = format!("{:x}", hasher.finalize());
 
         let source = SourceMeta {
@@ -45,7 +47,7 @@ impl FactFetcher for WebFetcher {
 
         let evidence = Evidence {
             source,
-            snippet: body.chars().take(1200).collect(),
+            snippet: clean_text.chars().take(1200).collect(),
         };
 
         Ok(vec![RequiredFact {
