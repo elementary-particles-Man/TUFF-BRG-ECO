@@ -100,7 +100,10 @@ Output JSON only: { "event_name": string, "occurred_at": string(ISO8601 or null)
             to_state: res.to_state,
             event: res.event_name,
             occurred_at,
-            evidence_ids: Vec::new(),
+            evidence_ids: external_evidence
+                .iter()
+                .map(|e| e.evidence_id.clone())
+                .collect(),
         }))
     }
 }

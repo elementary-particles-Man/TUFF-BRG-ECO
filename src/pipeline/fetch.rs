@@ -1,4 +1,4 @@
-use crate::models::{Evidence, RequiredFact, SourceMeta};
+use crate::models::{Evidence, Id, RequiredFact, SourceMeta};
 use crate::pipeline::traits::FactFetcher;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -46,6 +46,7 @@ impl FactFetcher for WebFetcher {
         };
 
         let evidence = Evidence {
+            evidence_id: Id::new(),
             source,
             snippet: clean_text.chars().take(1200).collect(),
         };

@@ -1,3 +1,4 @@
+use crate::models::Id;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -10,6 +11,7 @@ pub struct SourceMeta {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Evidence {
+    pub evidence_id: Id,
     pub source: SourceMeta,
     pub snippet: String,
 }
