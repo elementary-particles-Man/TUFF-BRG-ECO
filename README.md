@@ -1,48 +1,24 @@
-# TUFF-DB / Transformer-NEO
+# Transformer-NEO on TUFF-DB
 
-ハルシネーションを物理的に拒絶するための型安全・決定論パイプライン実装です。
-このリポジトリは **TUFF-DB (WAL + Index)** と **Ingest Core** を中心に、
-LLM検証・抽象化・ギャップ解決（Transition生成）までの実装ベースを提供します。
+## 概要 (Overview)
+**TUFF-DB (The Unfiltered Fact Finder Database)** は、LLMのハルシネーション（幻覚）と現在バイアスを物理的・構造的に排除するために設計された、Rust製の次世代情報検証基盤です。
+
+「学習データ（過去）」と「Web上の事実（現在）」の乖離を単なるエラーとして扱わず、その間にある**「歴史的変遷（Transition）」**を特定・記録することで、真実を「点」ではなく「線（Trajectory）」として管理します。
+
+## 主な機能 (Core Features)
+1. **Physical Identity Protocol**:
+   - AIの「Origin（起源）」をコードレベルで固定し、役割（Role）と分離。
+   - ログの責任帰属を暗号的に保証。
+2. **Verification Floor System**:
+   - 外部事実と矛盾する主張を「SMOKE」層へ物理的に隔離。
+3. **Gap Resolver (The Historian)**:
+   - 内部知識と外部事実の差分を検知し、その原因（イベント）をWebから特定。
+   - 「いつ、なぜ変わったか」を `Transition` レコードとして編纂。
+4. **Determinism over Probability**:
+   - 確率的な生成よりも、Rustの型システムと検証ロジックによる決定論的処理を優先。
 
 ## クイックスタート
-
-```bash
-# 依存取得とビルド
-cargo run
-```
-
-`.env` を使って実弾モードで動作させる場合は、以下を設定してください。
-
 ```bash
 export OPENAI_API_KEY="sk-..."
-export OPENAI_MODEL="gpt-4o"
-export TARGET_URL="https://www.kantei.go.jp/jp/rekidai/index.html"
-
 cargo run
 ```
-
-## 主要機能
-
-- WAL (Write Ahead Log) への追記型永続化
-- InMemoryIndex による検索
-- Evidence 取得と HTML サニタイズ
-- LLM Verifier / LLM Abstractor / LLM GapResolver
-- Transition 生成（履歴の編纂）
-
-## ディレクトリ
-
-- `src/models/` : ドメインモデル
-- `src/db/` : TUFF-DB (WAL + Index)
-- `src/pipeline/` : Ingest / Verifier / Abstractor / GapResolver
-- `docs/` : 資料・設計ノート
-
-## 重要な環境変数
-
-- `OPENAI_API_KEY` : LLM 実弾接続用
-- `OPENAI_MODEL` : 使用モデル
-- `TARGET_URL` : Evidence 取得元
-- `AGENT_ROLE` : AgentIdentity の role に反映
-
-## ライセンス
-
-- `LICENSE` を参照してください。
