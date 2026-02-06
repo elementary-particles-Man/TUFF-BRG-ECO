@@ -17,7 +17,10 @@ pub struct LlmGapResolver {
 
 impl LlmGapResolver {
     pub fn new(api_key: &str, model: &str) -> Self {
-        let config = OpenAIConfig::new().with_api_key(api_key);
+        let mut config = OpenAIConfig::new().with_api_key(api_key);
+        if let Ok(base_url) = std::env::var("OPENAI_API_BASE") {
+            config = config.with_api_base(base_url);
+        }
         Self {
             client: Client::with_config(config),
             model: model.to_string(),
@@ -53,7 +56,7 @@ impl GapResolver for LlmGapResolver {
 
         let system_prompt = r#"You are a Historian AI.
 Identify the EVENT that caused a change from the Internal State to the External Evidence.
-Output JSON only: { "event_name": string, "occurred_at": string(ISO8601 or null), "from_state": string, "to_state": string }"#;
+Output JSON only: { \"event_name\": string, \"occurred_at\": string(ISO8601 or null), \"from_state\": string, \"to_state\": string }"#;
 
         let user_prompt = format!(
             "Internal State: {}\nExternal Evidence: {}\nClaim: {}\n\nWhat event connects these states?",

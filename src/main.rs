@@ -7,7 +7,8 @@ use transformer_neo::db::TuffEngine;
 use transformer_neo::models::{Claim, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
-    GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier, WebFetcher,
+    FactFetcher, GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
+    WebFetcher,
 };
 
 enum Verifier {
