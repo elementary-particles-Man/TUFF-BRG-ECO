@@ -34,22 +34,43 @@ impl LlmVerifier {
             _ => VerificationStatus::GrayMid,
         }
     }
+
+    fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
+        if v < lo {
+            lo
+        } else if v > hi {
+            hi
+        } else {
+            v
+        }
+    }
+
+    fn confidence_adjust(conf_llm: f32, evidence_count: usize) -> f32 {
+        let factor = Self::clamp(evidence_count as f32 / 3.0, 0.4, 1.0);
+        Self::clamp(conf_llm * factor, 0.0, 1.0)
+    }
 }
 
 #[derive(Deserialize)]
 struct LlmResponse {
     status: String,
+    confidence: f32,
     reasoning: String,
 }
 
 #[async_trait]
 impl ClaimVerifier for LlmVerifier {
-    async fn verify(&self, fragment: &str, facts: &[RequiredFact]) -> Result<VerificationStatus> {
+    async fn verify(
+        &self,
+        fragment: &str,
+        facts: &[RequiredFact],
+    ) -> Result<(VerificationStatus, f32)> {
         if facts.is_empty() {
-            return Ok(VerificationStatus::GrayMid);
+            return Ok((VerificationStatus::GrayMid, 0.4));
         }
 
         let mut evidence_blocks = Vec::new();
+        let mut evidence_count = 0usize;
         for fact in facts {
             for evidence in &fact.evidence {
                 let snippet: String = evidence.snippet.chars().take(300).collect();
@@ -57,6 +78,7 @@ impl ClaimVerifier for LlmVerifier {
                     "[URL: {}] [SHA256: {}]\n{}",
                     evidence.source.url, evidence.source.sha256_hex, snippet
                 ));
+                evidence_count += 1;
             }
         }
 
@@ -95,11 +117,13 @@ SMOKE if evidence contradicts claim. WHITE if evidence supports claim. Use GRAY_
 
         let parsed: LlmResponse = serde_json::from_str(&content).unwrap_or(LlmResponse {
             status: "GRAY_MID".to_string(),
+            confidence: 0.4,
             reasoning: format!("Parse error: {}", content),
         });
 
         let _reasoning = parsed.reasoning;
         let status = Self::parse_status(&parsed.status);
-        Ok(status)
+        let confidence = Self::confidence_adjust(parsed.confidence, evidence_count);
+        Ok((status, confidence))
     }
 }

@@ -23,3 +23,13 @@ pub struct Transition {
     // 根拠となるEvidence ID
     pub evidence_ids: Vec<Id>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ManualOverride {
+    pub override_id: Id,
+    pub observed_at: IsoDateTime,
+    pub agent: AgentIdentity,
+    pub conversation_id: Option<String>,
+    pub abstract_id: Option<Id>,
+    pub note: Option<String>,
+}

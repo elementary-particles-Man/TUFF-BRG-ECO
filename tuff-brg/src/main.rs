@@ -1,14 +1,25 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use dotenv::dotenv;
+use futures_util::{SinkExt, StreamExt};
 use std::env;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use transformer_neo::db::TuffEngine;
-use transformer_neo::models::{Claim, Evidence, VerificationStatus};
+use tokio::net::TcpListener;
+use tokio_tungstenite::accept_async;
+use transformer_neo::db::{OpKind, TuffEngine};
+use transformer_neo::models::{AgentIdentity, Claim, Evidence, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
     FactFetcher, GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
     WebFetcher,
+};
+
+mod api;
+use api::message::{
+    ControlCommand, ControlCommandPayload, ControlTrigger, JudgeResultPayload, Message,
+    StreamFragmentPayload, VerificationStatus as ProtoStatus,
 };
 
 enum Verifier {
@@ -22,7 +33,7 @@ impl ClaimVerifier for Verifier {
         &self,
         fragment: &str,
         facts: &[transformer_neo::models::RequiredFact],
-    ) -> anyhow::Result<VerificationStatus> {
+    ) -> anyhow::Result<(VerificationStatus, f32)> {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,
@@ -52,18 +63,23 @@ impl AbstractGenerator for Abstractor {
 
 fn valid_api_key(key: &str) -> bool {
     let trimmed = key.trim();
-    if trimmed.is_empty() {
-        return false;
+    !trimmed.is_empty() && !trimmed.contains("...")
+}
+
+fn to_proto_status(status: VerificationStatus) -> ProtoStatus {
+    match status {
+        VerificationStatus::Smoke => ProtoStatus::Smoke,
+        VerificationStatus::GrayBlack => ProtoStatus::GrayBlack,
+        VerificationStatus::GrayMid => ProtoStatus::GrayMid,
+        VerificationStatus::GrayWhite => ProtoStatus::GrayWhite,
+        VerificationStatus::White => ProtoStatus::White,
     }
-    if trimmed.contains("...") {
-        return false;
-    }
-    true
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
+    let _identity = AgentIdentity::current();
 
     let wal_dir = PathBuf::from("_tuffdb");
     fs::create_dir_all(&wal_dir)?;
@@ -93,8 +109,6 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
-    let fetcher = WebFetcher::new();
-
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
         fetcher: WebFetcher::new(),
@@ -103,33 +117,131 @@ async fn main() -> anyhow::Result<()> {
         db: engine,
     };
 
-    let input = "高市早苗は首相である";
-    let ops = pipeline.ingest(input).await?;
-    if let Some(op) = ops.first() {
-        println!("op_id={}", op.op_id);
-    }
+    let addr: SocketAddr = "127.0.0.1:8787".parse()?;
+    let listener = TcpListener::bind(addr).await?;
+    println!("TUFF-BRG listening on {}", addr);
 
-    let all = pipeline.select_all()?;
-    println!("stored={}", all.len());
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let mut ws = accept_async(stream).await?;
 
-    if let Some(resolver) = gap_resolver {
-        let internal_state = "Current Prime Minister is Shigeru Ishiba";
-        let facts = fetcher.fetch(input).await?;
-        let evidences: Vec<Evidence> = facts.iter().flat_map(|f| f.evidence.clone()).collect();
+        while let Some(msg) = ws.next().await {
+            let msg = msg?;
+            if !msg.is_text() {
+                continue;
+            }
 
-        let claim = Claim {
-            statement: input.to_string(),
-            sources: Vec::new(),
-        };
+            let text = msg.to_text()?;
+            let parsed: Message = match serde_json::from_str(text) {
+                Ok(v) => v,
+                Err(_) => {
+                    let stop = Message::ControlCommand {
+                        id: "system".to_string(),
+                        ts: Utc::now().to_rfc3339(),
+                        payload: ControlCommandPayload {
+                            command: ControlCommand::Stop,
+                            trigger: ControlTrigger::ManualOverride,
+                            detail: "JSON parse error".to_string(),
+                            manual_override: None,
+                        },
+                    };
+                    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&stop)?,
+                    ))
+                    .await?;
+                    continue;
+                }
+            };
 
-        if let Some(transition) = resolver
-            .resolve(&claim, internal_state, &evidences)
-            .await?
-        {
-            let op = pipeline.db.append_transition(transition)?;
-            println!("transition_op_id={}", op.op_id);
+            if let Message::StreamFragment { id, ts: _, payload } = parsed {
+                let StreamFragmentPayload {
+                    fragment,
+                    conversation_id: _,
+                    sequence_number: _,
+                    ..
+                } = payload;
+
+                let ops = pipeline.ingest(&fragment).await?;
+                let mut status = VerificationStatus::GrayMid;
+                let mut confidence = 0.4_f32;
+                let mut evidence_count = 0usize;
+                let mut abstract_id: Option<String> = None;
+                if let Some(outcome) = ops.first() {
+                    status = outcome.status;
+                    confidence = outcome.confidence;
+                    evidence_count = outcome.evidence_count;
+                    if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
+                        abstract_id = Some(abstract_.id.to_string());
+                    }
+                }
+                let judge = Message::JudgeResult {
+                    id,
+                    ts: Utc::now().to_rfc3339(),
+                    payload: JudgeResultPayload {
+                        status: to_proto_status(status),
+                        reason: "ok".to_string(),
+                        confidence,
+                        claim: fragment.clone(),
+                        evidence_count: evidence_count as u32,
+                        abstract_id,
+                    },
+                };
+                ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                    serde_json::to_string(&judge)?,
+                ))
+                .await?;
+
+                if status == VerificationStatus::Smoke {
+                    let stop = Message::ControlCommand {
+                        id: "system".to_string(),
+                        ts: Utc::now().to_rfc3339(),
+                        payload: ControlCommandPayload {
+                            command: ControlCommand::Stop,
+                            trigger: ControlTrigger::SmokeDetected,
+                            detail: "Smoke detected".to_string(),
+                            manual_override: None,
+                        },
+                    };
+                    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&stop)?,
+                    ))
+                    .await?;
+                } else if confidence < 0.35 {
+                    let stop = Message::ControlCommand {
+                        id: "system".to_string(),
+                        ts: Utc::now().to_rfc3339(),
+                        payload: ControlCommandPayload {
+                            command: ControlCommand::Stop,
+                            trigger: ControlTrigger::LowConfidence,
+                            detail: "Low confidence".to_string(),
+                            manual_override: None,
+                        },
+                    };
+                    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                        serde_json::to_string(&stop)?,
+                    ))
+                    .await?;
+                }
+
+                if let Some(resolver) = &gap_resolver {
+                    let internal_state = "Current Prime Minister is Shigeru Ishiba";
+                    let facts = pipeline.fetcher.fetch(&fragment).await?;
+                    let evidences: Vec<Evidence> =
+                        facts.iter().flat_map(|f| f.evidence.clone()).collect();
+
+                    let claim = Claim {
+                        statement: fragment.to_string(),
+                        sources: Vec::new(),
+                    };
+
+                    if let Some(transition) = resolver
+                        .resolve(&claim, internal_state, &evidences)
+                        .await?
+                    {
+                        let _ = pipeline.db.append_transition(transition)?;
+                    }
+                }
+            }
         }
     }
-
-    Ok(())
 }

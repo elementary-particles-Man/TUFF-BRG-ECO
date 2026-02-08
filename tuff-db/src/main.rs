@@ -106,8 +106,8 @@ async fn main() -> anyhow::Result<()> {
 
     let input = "高市早苗は首相である";
     let ops = pipeline.ingest(input).await?;
-    if let Some(op) = ops.first() {
-        println!("op_id={}", op.op_id);
+    if let Some(outcome) = ops.first() {
+        println!("op_id={}", outcome.op.op_id);
     }
 
     let all = pipeline.select_all()?;

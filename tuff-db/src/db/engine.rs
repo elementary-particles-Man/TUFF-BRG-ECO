@@ -1,6 +1,6 @@
 use crate::db::api::{OpKind, OpLog, SelectQuery, TuffDb};
 use crate::db::index::InMemoryIndex;
-use crate::models::{Abstract, AgentIdentity, Transition};
+use crate::models::{Abstract, AgentIdentity, ManualOverride, Transition};
 use chrono::Utc;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
@@ -55,6 +55,17 @@ impl TuffDb for TuffEngine {
         let op = OpLog {
             op_id: Uuid::new_v4(),
             kind: OpKind::InsertTransition { transition },
+            created_at: Utc::now(),
+        };
+        self.write_wal(&op)?;
+        Ok(op)
+    }
+
+    fn append_override(&self, mut override_: ManualOverride) -> anyhow::Result<OpLog> {
+        override_.agent = AgentIdentity::current();
+        let op = OpLog {
+            op_id: Uuid::new_v4(),
+            kind: OpKind::AppendOverride { override_ },
             created_at: Utc::now(),
         };
         self.write_wal(&op)?;

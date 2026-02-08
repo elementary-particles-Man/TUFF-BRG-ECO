@@ -1,4 +1,4 @@
-use crate::models::{Abstract, Transition, VerificationStatus};
+use crate::models::{Abstract, ManualOverride, Transition, VerificationStatus};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub enum OpKind {
     InsertAbstract { abstract_: Abstract },
     InsertTransition { transition: Transition },
+    AppendOverride { override_: ManualOverride },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -25,5 +26,6 @@ pub struct SelectQuery {
 pub trait TuffDb: Send + Sync {
     fn append_abstract(&self, abstract_: Abstract) -> anyhow::Result<OpLog>;
     fn append_transition(&self, transition: Transition) -> anyhow::Result<OpLog>;
+    fn append_override(&self, override_: ManualOverride) -> anyhow::Result<OpLog>;
     fn select(&self, query: SelectQuery) -> anyhow::Result<Vec<Abstract>>;
 }

@@ -31,6 +31,8 @@ DOM断片の送信。
   "id": "...",
   "ts": "...",
   "payload": {
+    "conversation_id": "...",
+    "sequence_number": 0,
     "url": "https://example.com",
     "selector": "#chat",
     "fragment": "...DOM text...",
@@ -55,7 +57,8 @@ DOM断片の送信。
     "reason": "...",
     "confidence": 0.0,
     "claim": "...",
-    "evidence_count": 0
+    "evidence_count": 0,
+    "abstract_id": "uuid | null"
   }
 }
 ```
@@ -94,6 +97,10 @@ DOM断片の送信。
 - `VerificationStatus::Smoke` が確定した瞬間。
 - `confidence` が閾値（暫定: 0.35）を下回った場合。
 
+## STOP 後の復帰
+- `ControlCommand: CONTINUE` 受信時は、Add-on は表示ブロックを解除する。
+- `trigger: ManualOverride` の場合は、ユーザー操作による再開としてログに記録する。
+
 ## エラー処理
 - JSON 解析失敗時は `ControlCommand: STOP` を返し、
   `trigger` を `ManualOverride` として通知。
@@ -102,3 +109,6 @@ DOM断片の送信。
 - 初期段階は `localhost` のみ許可。
 - 将来的に `Auth` メッセージでトークン検証を行う。
 
+## 補足
+- `confidence` の算出根拠（ログイット差分 / 証拠数等）は `docs/architecture.md` で定義する。
+- `Auth` は接続直後に送信する方式を基本とし、将来的にメッセージ内トークンへ拡張可能とする。

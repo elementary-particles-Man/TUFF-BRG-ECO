@@ -16,7 +16,7 @@ pub trait ClaimVerifier: Send + Sync {
         &self,
         fragment: &str,
         facts: &[RequiredFact],
-    ) -> anyhow::Result<VerificationStatus>;
+    ) -> anyhow::Result<(VerificationStatus, f32)>;
 }
 
 #[async_trait]

@@ -1,0 +1,34 @@
+{
+  "type": "RESPONSE",
+  "status": "DONE",
+  "summary": [
+    "ClaimVerifier の返却を (VerificationStatus, confidence) に拡張し、LlmVerifier/DummyVerifier/ingest を対応させました。",
+    "tuff-brg の STOP 判定に confidence を結合し、JudgeResult に confidence と evidence_count を反映しました。",
+    "ManualOverride 用の WAL 記録に備え、ManualOverride モデルと OpKind::AppendOverride を追加しました。",
+    "ControlCommand に manual_override メタ情報の拡張フィールドを追加しました。"
+  ],
+  "files_changed": [
+    "tuff-db/src/pipeline/traits.rs",
+    "tuff-db/src/pipeline/ingest.rs",
+    "tuff-db/src/pipeline/mock.rs",
+    "tuff-db/src/pipeline/llm_verifier.rs",
+    "tuff-db/src/main.rs",
+    "tuff-db/src/models/history.rs",
+    "tuff-db/src/db/api.rs",
+    "tuff-db/src/db/engine.rs",
+    "tuff-brg/src/main.rs",
+    "tuff-brg/src/api/message.rs"
+  ],
+  "review": {
+    "improvements": [
+      "confidence の算出根拠（evidence_count の重み付け、Tier-1 ソース加点）を設定可能にする。",
+      "JudgeResult の reason を LLM の reasoning から要約して返す実装を追加する。",
+      "ManualOverride の CONTINUE 送信経路（Addon -> MID）の設計と実装を追加する。"
+    ],
+    "open_questions": [
+      "confidence 閾値 0.35 を環境変数化するか固定とするか。",
+      "ManualOverride を WAL に記録するタイミングと payload（conversation_id / abstract_id / note）の確定。"
+    ]
+  },
+  "tests": "NOT_RUN"
+}

@@ -10,6 +10,11 @@ const SELECTORS = {
 };
 const STABLE_TEXT_MS = 900;
 const SAFE_MODEL_RE = /\bgpt-?5\b/i;
+const WS_URL = "ws://127.0.0.1:8787";
+const WS_RETRY_BASE_MS = 800;
+const WS_RETRY_MAX_MS = 8000;
+const WS_SEND_DEBOUNCE_MS = 180;
+const STOP_OVERLAY_ID = "tuff-brg-stop-overlay";
 
 let lastScrollTop = null;
 let activeAssistant = null;
@@ -19,8 +24,171 @@ let scrollClampEnabled = false;
 let mutationDebounceTimer = null;
 let finalizeTimer = null;
 let responseSafeMode = false;
+let ws = null;
+let wsRetryTimer = null;
+let wsRetryDelay = WS_RETRY_BASE_MS;
+let wsReady = false;
+let convoId = crypto.randomUUID();
+let seq = 0;
+let lastSentText = "";
+let sendTimer = null;
+let lastAbstractId = null;
+let stopActive = false;
 
 window.__GPT_BOOSTER_NEW__ = true;
+
+function nowRfc3339() {
+  return new Date().toISOString();
+}
+
+function wsScheduleReconnect() {
+  if (wsRetryTimer) return;
+  wsRetryTimer = setTimeout(() => {
+    wsRetryTimer = null;
+    wsRetryDelay = Math.min(WS_RETRY_MAX_MS, wsRetryDelay * 2);
+    wsConnect();
+  }, wsRetryDelay);
+}
+
+function wsConnect() {
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch (_) {
+    wsScheduleReconnect();
+    return;
+  }
+
+  ws.addEventListener("open", () => {
+    wsReady = true;
+    wsRetryDelay = WS_RETRY_BASE_MS;
+  });
+
+  ws.addEventListener("close", () => {
+    wsReady = false;
+    wsScheduleReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    wsReady = false;
+    wsScheduleReconnect();
+  });
+
+  ws.addEventListener("message", (ev) => {
+    if (typeof ev.data !== "string") return;
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch (_) {
+      return;
+    }
+
+    if (msg.type === "JudgeResult" && msg.payload) {
+      if (msg.payload.abstract_id) {
+        lastAbstractId = msg.payload.abstract_id;
+      }
+    }
+
+    if (msg.type === "ControlCommand" && msg.payload) {
+      const cmd = msg.payload.command;
+      if (cmd === "STOP") {
+        activateStopOverlay(msg.payload.detail || "STOP");
+      } else if (cmd === "CONTINUE") {
+        deactivateStopOverlay();
+      }
+    }
+  });
+}
+
+function ensureStopOverlayStyle() {
+  if (document.getElementById("tuff-brg-stop-style")) return;
+  const style = document.createElement("style");
+  style.id = "tuff-brg-stop-style";
+  style.textContent = `
+#${STOP_OVERLAY_ID} {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 8, 8, 0.85);
+  color: #f6f6f6;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+}
+#${STOP_OVERLAY_ID} .card {
+  max-width: 520px;
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+}
+#${STOP_OVERLAY_ID} .title { font-size: 18px; margin-bottom: 10px; }
+#${STOP_OVERLAY_ID} .reason { font-size: 13px; opacity: 0.85; }
+#${STOP_OVERLAY_ID} .link { margin-top: 12px; font-size: 12px; color: #7dd3fc; }
+`;
+  document.head.appendChild(style);
+}
+
+function activateStopOverlay(detail) {
+  stopActive = true;
+  ensureStopOverlayStyle();
+  if (document.getElementById(STOP_OVERLAY_ID)) return;
+  const overlay = document.createElement("div");
+  overlay.id = STOP_OVERLAY_ID;
+  const link = lastAbstractId ? `Abstract ID: ${lastAbstractId}` : "Abstract ID: (pending)";
+  overlay.innerHTML = `
+    <div class="card">
+      <div class="title">STOP: 検証失敗を検知</div>
+      <div class="reason">${detail || "Smoke detected"}</div>
+      <div class="link">${link}</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function deactivateStopOverlay() {
+  stopActive = false;
+  const overlay = document.getElementById(STOP_OVERLAY_ID);
+  if (overlay) overlay.remove();
+}
+
+function buildStreamFragmentPayload(fragment) {
+  return {
+    type: "StreamFragment",
+    id: crypto.randomUUID(),
+    ts: nowRfc3339(),
+    payload: {
+      conversation_id: convoId,
+      sequence_number: seq++,
+      url: window.location.href,
+      selector: SELECTORS.assistant,
+      fragment,
+      context: {
+        page_title: document.title || "",
+        locale: navigator.language || ""
+      }
+    }
+  };
+}
+
+function sendStreamFragment(fragment) {
+  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = buildStreamFragmentPayload(fragment);
+  ws.send(JSON.stringify(msg));
+}
+
+function scheduleSend(fragment) {
+  if (fragment === lastSentText) return;
+  lastSentText = fragment;
+  if (sendTimer) clearTimeout(sendTimer);
+  sendTimer = setTimeout(() => {
+    sendTimer = null;
+    sendStreamFragment(fragment);
+  }, WS_SEND_DEBOUNCE_MS);
+}
 
 function detectModelTokenFromLocation() {
   try {
@@ -336,6 +504,9 @@ function handleMutations() {
     clearTimeout(mutationDebounceTimer);
     mutationDebounceTimer = null;
   }
+  if (stopActive) {
+    return;
+  }
   if (responseSafeMode) {
     disableClamp();
     return;
@@ -354,6 +525,7 @@ function handleMutations() {
   const streaming = hasStreamingCursor(latest);
   const sinceChange = Date.now() - lastAssistantChange;
   const isStable = stableText && !streaming && sinceChange >= STABLE_TEXT_MS;
+  scheduleSend((latest.textContent || "").replace(/\s+/g, " ").trim());
 
   if (isStable) {
     upsertVisibleTimestamp(latest, "assistant", { markAssistantDone: true });
@@ -389,6 +561,7 @@ function start() {
   if (!document.body) return;
   refreshResponseSafeMode();
   ensureTimestampStyle();
+  wsConnect();
   const observer = new MutationObserver(scheduleMutationHandling);
   observer.observe(document.body, OBS_CONFIG);
   annotateTurns();

@@ -35,11 +35,11 @@ impl ClaimVerifier for DummyVerifier {
         &self,
         _fragment: &str,
         facts: &[RequiredFact],
-    ) -> anyhow::Result<VerificationStatus> {
+    ) -> anyhow::Result<(VerificationStatus, f32)> {
         if facts.is_empty() {
-            Ok(VerificationStatus::GrayMid)
+            Ok((VerificationStatus::GrayMid, 0.4))
         } else {
-            Ok(VerificationStatus::White)
+            Ok((VerificationStatus::White, 0.8))
         }
     }
 }
