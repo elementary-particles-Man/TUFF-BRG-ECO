@@ -1,6 +1,6 @@
 // GPT-Booster v5.2 ultra-passive — ChatGPT output aware (standalone, body observer)
 
-const DEBUG = false;
+const DEBUG = true;
 const OBS_CONFIG = { childList: true, subtree: true };
 const TIMESTAMP_STYLE_ID = "gpt-booster-visible-timestamp-style";
 const SELECTORS = {
@@ -8,12 +8,31 @@ const SELECTORS = {
   rootFallback: '[role="article"]',
   turns: '[data-message-author-role], .user-query, .model-response, [data-test-id="user-query"], [data-test-id="model-response"], user-query, message-content'
 };
+const GEMINI_SELECTORS = {
+  assistant: [
+    'div[data-message-author-role="model"]',
+    'div[data-message-author-role="assistant"]',
+    'div.message-content',
+    'div[class*="message-content"]',
+    'div[class*="model-response"]',
+    'div[class*="response"]',
+    'div[aria-label*="Model response"]',
+    'div[aria-live="polite"]'
+  ].join(", "),
+  turns: [
+    'div[data-message-author-role]',
+    'div.message-content',
+    'div[class*="message-content"]',
+    'div[class*="response"]'
+  ].join(", ")
+};
 const STABLE_TEXT_MS = 900;
 const SAFE_MODEL_RE = /\bgpt-?5\b/i;
 const WS_URL = "ws://127.0.0.1:8787";
 const WS_RETRY_BASE_MS = 800;
 const WS_RETRY_MAX_MS = 8000;
 const WS_SEND_DEBOUNCE_MS = 180;
+const SEND_DELAY = 600;
 const STOP_OVERLAY_ID = "tuff-brg-stop-overlay";
 const CONTINUE_BUTTON_ID = "tuff-brg-continue-btn";
 const META_COPY_ID = "tuff-brg-meta-copy";
@@ -31,6 +50,7 @@ let ws = null;
 let wsRetryTimer = null;
 let wsRetryDelay = WS_RETRY_BASE_MS;
 let wsReady = false;
+let pendingFragments = [];
 let convoId = crypto.randomUUID();
 let seq = 0;
 let lastSentText = "";
@@ -43,11 +63,27 @@ let lastJudgeStatus = null;
 let lastJudgeReason = null;
 let lastJudgeClaim = null;
 let lastJudgeTs = null;
+let lastDebugFragment = "";
+let lastDebugTs = 0;
 
 window.__GPT_BOOSTER_NEW__ = true;
 
 function nowRfc3339() {
   return new Date().toISOString();
+}
+
+function isGeminiPage() {
+  return location.hostname.includes("gemini.google.com");
+}
+
+function debugLogFragment(source, text) {
+  if (!DEBUG) return;
+  const now = Date.now();
+  if (text === lastDebugFragment && now - lastDebugTs < 1000) return;
+  lastDebugFragment = text;
+  lastDebugTs = now;
+  const snippet = text.length > 160 ? `${text.slice(0, 160)}...` : text;
+  console.log(`[TUFF][${source}] ${snippet}`);
 }
 
 function wsScheduleReconnect() {
@@ -70,6 +106,7 @@ function wsConnect() {
   ws.addEventListener("open", () => {
     wsReady = true;
     wsRetryDelay = WS_RETRY_BASE_MS;
+    flushPendingFragments();
   });
 
   ws.addEventListener("close", () => {
@@ -249,19 +286,62 @@ function buildStreamFragmentPayload(fragment) {
 }
 
 function sendStreamFragment(fragment) {
-  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
-  const msg = buildStreamFragmentPayload(fragment);
-  ws.send(JSON.stringify(msg));
+  if (!fragment) return false;
+  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) {
+    queuePendingFragment(fragment);
+    return false;
+  }
+  try {
+    debugLogFragment("send", fragment);
+    const msg = buildStreamFragmentPayload(fragment);
+    ws.send(JSON.stringify(msg));
+    if (DEBUG) console.log("[TUFF] Sent to server!");
+    return true;
+  } catch (_) {
+    queuePendingFragment(fragment);
+    return false;
+  }
 }
 
 function scheduleSend(fragment) {
-  if (fragment === lastSentText) return;
-  lastSentText = fragment;
+  if (fragment === lastSentText || fragment.length < 4) return;
   if (sendTimer) clearTimeout(sendTimer);
   sendTimer = setTimeout(() => {
     sendTimer = null;
-    sendStreamFragment(fragment);
-  }, WS_SEND_DEBOUNCE_MS);
+    if (Math.abs(fragment.length - lastSentText.length) > 5) {
+      if (DEBUG) {
+        const snippet = fragment.length > 10 ? `${fragment.slice(0, 10)}...` : fragment;
+        console.log("[TUFF][throttled-send]", snippet);
+      }
+      sendStreamFragment(fragment);
+      lastSentText = fragment;
+    }
+  }, SEND_DELAY);
+}
+
+function queuePendingFragment(fragment) {
+  if (!fragment) return;
+  pendingFragments.push(fragment);
+  if (pendingFragments.length > 50) {
+    pendingFragments = pendingFragments.slice(-50);
+  }
+}
+
+function flushPendingFragments() {
+  if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!pendingFragments.length) return;
+  const queue = pendingFragments.slice();
+  pendingFragments = [];
+  queue.forEach((fragment) => {
+    try {
+      debugLogFragment("send", fragment);
+      const msg = buildStreamFragmentPayload(fragment);
+      ws.send(JSON.stringify(msg));
+      if (DEBUG) console.log("[TUFF] Sent to server!");
+    } catch (_) {
+      queuePendingFragment(fragment);
+    }
+  });
 }
 
 function sendManualOverride() {
@@ -333,7 +413,26 @@ function hasStreamingCursor(root) {
   );
 }
 
+function pickLatestWithText(nodes) {
+  const list = Array.from(nodes || []);
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const node = list[i];
+    if (!(node instanceof HTMLElement)) continue;
+    const text = extractNodeText(node);
+    if (text.length > 0) return node;
+  }
+  return null;
+}
+
+function getLatestGeminiAssistant() {
+  const nodes = document.querySelectorAll(GEMINI_SELECTORS.assistant);
+  return pickLatestWithText(nodes);
+}
+
 function getLatestAssistant() {
+  if (isGeminiPage()) {
+    return getLatestGeminiAssistant() || document.querySelector(SELECTORS.rootFallback);
+  }
   const assistants = document.querySelectorAll(SELECTORS.assistant);
   if (assistants.length) return assistants[assistants.length - 1];
   const fallbackNodes = document.querySelectorAll(SELECTORS.rootFallback);
@@ -351,10 +450,9 @@ function ensureTimestampStyle() {
       opacity: 0.72;
       margin: 0 0 8px 0;
       letter-spacing: 0.01em;
-      user-select: none;
-      pointer-events: none;
+      user-select: text;
+      pointer-events: auto;
     }
-    .gpt-booster-ts::before { content: attr(data-label); }
     .gpt-booster-ts-user { color: #2d6a4f; }
     .gpt-booster-ts-assistant { color: #1d3557; }
   `;
@@ -523,6 +621,7 @@ function upsertVisibleTimestamp(node, role, options = {}) {
       ? `${roleLabel}: ${formatLocalTimestamp(ts)} -> ${formatLocalTimestamp(endTs)} ${tz}`
       : `${roleLabel}: ${formatLocalTimestamp(ts)} ${tz}`;
   badge.setAttribute("data-label", label);
+  badge.textContent = label;
 }
 
 function detectRole(node) {
@@ -534,13 +633,14 @@ function detectRole(node) {
 
   if (tagName === "user-query" || testId === "user-query" || node.classList.contains("user-query")) return "user";
   if (tagName === "message-content" || testId === "model-response" || node.classList.contains("model-response")) return "assistant";
+  if (isGeminiPage() && node.classList.contains("message-content")) return "assistant";
   
   return null;
 }
 
 function annotateTurns() {
   if (responseSafeMode) return;
-  const turns = document.querySelectorAll(SELECTORS.turns);
+  const turns = document.querySelectorAll(isGeminiPage() ? GEMINI_SELECTORS.turns : SELECTORS.turns);
   turns.forEach((node) => {
     if (!(node instanceof HTMLElement)) return;
     const role = detectRole(node);
@@ -557,7 +657,7 @@ function annotateTurns() {
 }
 
 function markAssistantState(node) {
-  const text = node ? node.textContent || "" : "";
+  const text = node ? extractNodeText(node) : "";
   if (node !== activeAssistant) {
     activeAssistant = node;
     lastAssistantText = text;
@@ -609,6 +709,9 @@ function handleMutations() {
   annotateTurns();
   if (!latest) return;
 
+  const latestText = extractNodeText(latest);
+  if (latestText) debugLogFragment("pick", latestText);
+
   if (isThinking(latest)) {
     disableClamp();
     scheduleFinalizeCheck();
@@ -619,7 +722,7 @@ function handleMutations() {
   const streaming = hasStreamingCursor(latest);
   const sinceChange = Date.now() - lastAssistantChange;
   const isStable = stableText && !streaming && sinceChange >= STABLE_TEXT_MS;
-  scheduleSend((latest.textContent || "").replace(/\s+/g, " ").trim());
+  scheduleSend(latestText);
 
   if (isStable) {
     upsertVisibleTimestamp(latest, "assistant", { markAssistantDone: true });
@@ -632,6 +735,12 @@ function handleMutations() {
 function scheduleMutationHandling() {
   if (mutationDebounceTimer) clearTimeout(mutationDebounceTimer);
   mutationDebounceTimer = setTimeout(handleMutations, 150);
+}
+
+function extractNodeText(node) {
+  if (!node) return "";
+  const text = (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+  return text;
 }
 
 function clampScroll() {

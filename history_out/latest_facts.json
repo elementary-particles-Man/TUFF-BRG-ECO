@@ -1,0 +1,17 @@
+{
+  "last_updated": "2026-02-08T10:58:25.991953135+00:00",
+  "facts": [
+    {
+      "topic_id": "tag:sanity|smoke",
+      "subject": "INGEST",
+      "current_value": "SMOKE: 高市早苗は首相である",
+      "status": "VERIFIED",
+      "confidence": 0.0,
+      "confidence_kind": "UNKNOWN",
+      "agent_origin": "UNKNOWN",
+      "source_op_id": "op_8edda370",
+      "last_event_ts": "2026-02-06T12:34:02.426950454+00:00",
+      "is_human_overridden": false
+    }
+  ]
+}

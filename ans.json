@@ -2,25 +2,25 @@
   "type": "RESPONSE",
   "status": "DONE",
   "summary": [
-    "tuff-brg に axum を導入し、/history と /history/api/latest|timeline を提供する HTTP エンドポイントを追加しました。",
-    "WebSocket は同一ポートの / で維持し、既存の検証/STOP/Override 連携はそのまま動作します。",
-    "History Viewer の single-file HTML を tuff-brg/assets/history_viewer.html として追加しました。"
+    "TUFF-DB-LIGHTWEIGHT を最小実装で追加しました（平文WAL + オンメモリTag/Meaning + 物理切断）。",
+    "RDBMS不要・オンメモリ前提の即答/照合を最優先とする設計に合わせています。"
   ],
-  "files_changed": [
-    "tuff-brg/src/main.rs",
-    "tuff-brg/Cargo.toml",
-    "tuff-brg/assets/history_viewer.html"
+  "files": [
+    "tuff-db/src/lightweight/storage.rs",
+    "tuff-db/src/lightweight/verifier.rs",
+    "tuff-db/src/lightweight/main.rs",
+    "tuff-db/Cargo.toml"
   ],
-  "review": {
-    "improvements": [
-      "latest_facts.json / timeline.json が存在しない場合のエラーメッセージを JSON 形式で返す。",
-      "/history の HTML を埋め込みバイナリ化するか、パス解決を安定化する。",
-      "WS のパス分離（例: /ws）を将来検討する。"
-    ],
-    "open_questions": [
-      "history_out の生成タイミングを自動化するか（cron/起動時の再生成）。",
-      "Viewer のリンク用 base URL を TUFF_WEB_BASE で統一するか。"
-    ]
-  },
-  "tests": "NOT_RUN"
+  "behavior": [
+    "WAL: append-only plaintext（\t区切り + SHA256サフィックス）",
+    "Memory index: HashMap<String, Vec<u64>>（tag→offsets）",
+    "Mismatch時: std::net::Shutdown::Both で物理切断",
+    "INGESTログ: start/end を必ず出力"
+  ],
+  "run": [
+    "TUFF_MEANING_DB=tag1=meaning1;tag2=meaning2 \",
+    "TUFF_WAL_PATH=tuff-db-lightweight.wal \",
+    "TUFF_LIGHTWEIGHT_ADDR=127.0.0.1:8788 \",
+    "cargo run -p transformer_neo --bin tuff_db_lightweight"
+  ]
 }

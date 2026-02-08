@@ -54,7 +54,6 @@ pub struct TimelineEvent {
 
 #[derive(Debug, Clone)]
 struct RawEvent {
-    topic_id: String,
     timestamp: DateTime<Utc>,
     priority: u8,
     op_id_raw: String,
@@ -98,7 +97,7 @@ pub fn compile(wal_path: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> anyhow:
             OpKind::InsertAbstract { abstract_ } => {
                 let topic_id = topic_id_from_abstract(&abstract_);
                 abstract_topic.insert(abstract_.id.0, topic_id.clone());
-                let (event, raw) = event_from_abstract(op.op_id, op.created_at, abstract_);
+                let (_event, raw) = event_from_abstract(op.op_id, op.created_at, abstract_);
                 events_by_topic.entry(topic_id).or_default().push(raw);
             }
             OpKind::InsertTransition { transition } => {
@@ -106,7 +105,7 @@ pub fn compile(wal_path: impl AsRef<Path>, out_dir: impl AsRef<Path>) -> anyhow:
                 let raw = event_from_transition(op.op_id, op.created_at, transition, topic_id.clone());
                 events_by_topic.entry(topic_id).or_default().push(raw);
             }
-            OpKind::AppendOverride { override_: override_ } => {
+            OpKind::AppendOverride { override_ } => {
                 let topic_id = override_
                     .abstract_id
                     .as_ref()
@@ -194,7 +193,6 @@ fn event_from_abstract(op_id: Uuid, ts: DateTime<Utc>, abstract_: Abstract) -> (
         user_note: None,
     };
     let raw = RawEvent {
-        topic_id: topic_id_from_abstract(&abstract_),
         timestamp: ts,
         priority: 1,
         op_id_raw: op_id.simple().to_string(),
@@ -207,7 +205,7 @@ fn event_from_transition(
     op_id: Uuid,
     ts: DateTime<Utc>,
     transition: Transition,
-    topic_id: String,
+    _topic_id: String,
 ) -> RawEvent {
     let event = TimelineEvent {
         op_id: op_id_fmt(op_id),
@@ -225,7 +223,6 @@ fn event_from_transition(
         user_note: None,
     };
     RawEvent {
-        topic_id,
         timestamp: ts,
         priority: 2,
         op_id_raw: op_id.simple().to_string(),
@@ -237,7 +234,7 @@ fn event_from_override(
     op_id: Uuid,
     ts: DateTime<Utc>,
     override_: ManualOverride,
-    topic_id: String,
+    _topic_id: String,
 ) -> RawEvent {
     let event = TimelineEvent {
         op_id: op_id_fmt(op_id),
@@ -251,7 +248,6 @@ fn event_from_override(
         user_note: override_.note,
     };
     RawEvent {
-        topic_id,
         timestamp: ts,
         priority: 3,
         op_id_raw: op_id.simple().to_string(),

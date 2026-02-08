@@ -43,9 +43,10 @@ impl TuffDb for TuffEngine {
         };
         self.write_wal(&op)?;
 
-        let OpKind::InsertAbstract { abstract_ } = op.kind.clone();
-        let mut index = self.index.lock().expect("index lock");
-        index.insert(abstract_);
+        if let OpKind::InsertAbstract { abstract_ } = op.kind.clone() {
+            let mut index = self.index.lock().expect("index lock");
+            index.insert(abstract_);
+        }
 
         Ok(op)
     }

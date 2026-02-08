@@ -9,18 +9,24 @@ use axum::{
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use chrono::Utc;
 use dotenv::dotenv;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
+use futures_util::SinkExt;
 use std::env;
 use std::fs;
+use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use transformer_neo::db::{OpKind, TuffEngine};
-use transformer_neo::models::{AgentIdentity, Claim, Evidence, Id, IsoDateTime, ManualOverride, VerificationStatus};
+use tokio::signal;
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
+use tokio::time::{timeout, Duration};
+use transformer_neo::db::{OpKind, TuffDb, TuffEngine};
+use transformer_neo::models::{AgentIdentity, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
-    FactFetcher, GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
+    IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
     WebFetcher,
 };
 
@@ -105,6 +111,7 @@ struct AppState {
 async fn main() -> anyhow::Result<()> {
     dotenv().ok();
     let _identity = AgentIdentity::current();
+    log_line("TUFF-BRG boot: main() start");
 
     let wal_dir = PathBuf::from("_tuffdb");
     fs::create_dir_all(&wal_dir)?;
@@ -148,10 +155,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(0.35);
 
     let history_dir = PathBuf::from(env::var("TUFF_HISTORY_OUT").unwrap_or_else(|_| "history_out".to_string()));
-    let history_html_path = env::var("TUFF_HISTORY_HTML")
-        .unwrap_or_else(|_| "tuff-brg/assets/history_viewer.html".to_string());
-    let history_html = fs::read_to_string(&history_html_path)
-        .unwrap_or_else(|_| "<h1>History Viewer not found</h1>".to_string());
+    let history_html = include_str!("../assets/history_viewer.html").to_string();
 
     let state = AppState {
         pipeline: Arc::new(pipeline),
@@ -170,25 +174,136 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: SocketAddr = "127.0.0.1:8787".parse()?;
     let listener = TcpListener::bind(addr).await?;
-    println!("TUFF-BRG listening on {}", addr);
-    axum::serve(listener, app.into_make_service()).await?;
+    log_line(&format!("TUFF-BRG listening on {}", addr));
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let mut sigint = unix_signal(SignalKind::interrupt()).ok();
+    let mut sigterm = unix_signal(SignalKind::terminate()).ok();
+
+    tokio::select! {
+        _ = async {
+            if let Err(err) = signal::ctrl_c().await {
+                eprintln!("Failed to listen for shutdown signal: {}", err);
+            }
+        } => {
+            log_line("SIGINT received. Shutting down...");
+        }
+        _ = async {
+            if let Some(sig) = sigint.as_mut() { sig.recv().await; }
+        } => {
+            log_line("SIGINT (unix) received. Shutting down...");
+        }
+        _ = async {
+            if let Some(sig) = sigterm.as_mut() { sig.recv().await; }
+        } => {
+            log_line("SIGTERM received. Shutting down...");
+        }
+    }
+
+    // force exit if runtime is wedged
+    std::process::exit(0);
+}
+
+fn log_line(msg: &str) {
+    println!("{}", msg);
+    let _ = io::stdout().flush();
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    while let Some(msg) = socket.next().await {
-        let Ok(msg) = msg else { break };
-        if !msg.is_text() {
-            continue;
+async fn handle_socket(socket: WebSocket, state: AppState) {
+    log_line("WS: client connected");
+    let (mut ws_tx, mut ws_rx) = socket.split();
+    let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
+    let (frag_tx, mut frag_rx) = mpsc::channel::<String>(128);
+
+    // outbound pump
+    let tx_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if ws_tx.send(msg).await.is_err() {
+                break;
+            }
         }
-        let text = msg.to_text().unwrap_or("");
-        let parsed: Message = match serde_json::from_str(text) {
+    });
+
+    // ingest worker (decouple from WS receive loop)
+    let state_for_worker = state.clone();
+    let tx_for_worker = tx.clone();
+    let ingest_task = tokio::spawn(async move {
+        while let Some(fragment) = frag_rx.recv().await {
+            log_line("INGEST: start");
+            let ingest_result = timeout(
+                Duration::from_secs(3),
+                state_for_worker.pipeline.ingest(&fragment),
+            )
+            .await;
+
+            let ops = match ingest_result {
+                Ok(Ok(v)) => v,
+                Ok(Err(_)) => {
+                    log_line("INGEST: error");
+                    continue;
+                }
+                Err(_) => {
+                    log_line("INGEST: timeout");
+                    continue;
+                }
+            };
+            log_line("INGEST: end");
+
+            let mut status = VerificationStatus::GrayMid;
+            let mut confidence = 0.4_f32;
+            let mut evidence_count = 0usize;
+            let mut reason = "ok".to_string();
+            let mut abstract_id: Option<String> = None;
+            if let Some(outcome) = ops.first() {
+                status = outcome.status;
+                confidence = outcome.confidence;
+                evidence_count = outcome.evidence_count;
+                reason = outcome.reason.clone();
+                if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
+                    abstract_id = Some(abstract_.id.to_string());
+                }
+            }
+
+            let judge = Message::JudgeResult {
+                id: Id::new().to_string(),
+                ts: Utc::now().to_rfc3339(),
+                payload: JudgeResultPayload {
+                    status: to_proto_status(status),
+                    reason,
+                    confidence,
+                    claim: fragment.clone(),
+                    evidence_count: evidence_count as u32,
+                    abstract_id,
+                },
+            };
+            let _ = tx_for_worker
+                .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
+                .await;
+            log_line("WS: JudgeResult sent");
+        }
+    });
+
+    // inbound loop
+    while let Some(msg) = ws_rx.next().await {
+        let Ok(msg) = msg else { break };
+        let text = match msg {
+            WsMessage::Text(t) => t,
+            _ => continue,
+        };
+        log_line("WS: received text frame");
+        let parsed: Message = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(_) => {
+                log_line("WS: JSON parse error");
                 let stop = Message::ControlCommand {
                     id: "system".to_string(),
                     ts: Utc::now().to_rfc3339(),
@@ -199,13 +314,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         manual_override: None,
                     },
                 };
-                let _ = socket
+                let _ = tx
                     .send(WsMessage::Text(serde_json::to_string(&stop).unwrap_or_default()))
                     .await;
                 continue;
             }
         };
 
+        // handle control command inline
         if let Message::ControlCommand { payload, .. } = parsed {
             if payload.command == ControlCommand::Continue
                 && payload.trigger == ControlTrigger::ManualOverride
@@ -234,95 +350,18 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             continue;
         }
 
-        if let Message::StreamFragment { id, payload, .. } = parsed {
+        if let Message::StreamFragment { payload, .. } = parsed {
+            log_line("WS: StreamFragment received");
             let StreamFragmentPayload { fragment, .. } = payload;
-
-            let ops = match state.pipeline.ingest(&fragment).await {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let mut status = VerificationStatus::GrayMid;
-            let mut confidence = 0.4_f32;
-            let mut evidence_count = 0usize;
-            let mut reason = "ok".to_string();
-            let mut abstract_id: Option<String> = None;
-            if let Some(outcome) = ops.first() {
-                status = outcome.status;
-                confidence = outcome.confidence;
-                evidence_count = outcome.evidence_count;
-                reason = outcome.reason.clone();
-                if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
-                    abstract_id = Some(abstract_.id.to_string());
-                }
-            }
-
-            let judge = Message::JudgeResult {
-                id,
-                ts: Utc::now().to_rfc3339(),
-                payload: JudgeResultPayload {
-                    status: to_proto_status(status),
-                    reason,
-                    confidence,
-                    claim: fragment.clone(),
-                    evidence_count: evidence_count as u32,
-                    abstract_id,
-                },
-            };
-            let _ = socket
-                .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
-                .await;
-
-            if status == VerificationStatus::Smoke {
-                let stop = Message::ControlCommand {
-                    id: "system".to_string(),
-                    ts: Utc::now().to_rfc3339(),
-                    payload: ControlCommandPayload {
-                        command: ControlCommand::Stop,
-                        trigger: ControlTrigger::SmokeDetected,
-                        detail: "Smoke detected".to_string(),
-                        manual_override: None,
-                    },
-                };
-                let _ = socket
-                    .send(WsMessage::Text(serde_json::to_string(&stop).unwrap_or_default()))
-                    .await;
-            } else if confidence < state.stop_threshold {
-                let stop = Message::ControlCommand {
-                    id: "system".to_string(),
-                    ts: Utc::now().to_rfc3339(),
-                    payload: ControlCommandPayload {
-                        command: ControlCommand::Stop,
-                        trigger: ControlTrigger::LowConfidence,
-                        detail: "Low confidence".to_string(),
-                        manual_override: None,
-                    },
-                };
-                let _ = socket
-                    .send(WsMessage::Text(serde_json::to_string(&stop).unwrap_or_default()))
-                    .await;
-            }
-
-            if let Some(resolver) = &state.gap_resolver {
-                let internal_state = "Current Prime Minister is Shigeru Ishiba";
-                if let Ok(facts) = state.pipeline.fetcher.fetch(&fragment).await {
-                    let evidences: Vec<Evidence> =
-                        facts.iter().flat_map(|f| f.evidence.clone()).collect();
-
-                    let claim = Claim {
-                        statement: fragment.to_string(),
-                        sources: Vec::new(),
-                    };
-
-                    if let Ok(Some(transition)) = resolver
-                        .resolve(&claim, internal_state, &evidences)
-                        .await
-                    {
-                        let _ = state.pipeline.db.append_transition(transition);
-                    }
-                }
+            if frag_tx.try_send(fragment).is_err() {
+                // queue full -> drop newest (keep backpressure simple)
+                log_line("INGEST: queue full, dropped newest");
             }
         }
     }
+
+    tx_task.abort();
+    ingest_task.abort();
 }
 
 async fn history_page(State(state): State<AppState>) -> Html<String> {
@@ -341,6 +380,6 @@ fn serve_history_json(state: &AppState, file: &str) -> Response {
     let path = state.history_dir.join(file);
     match fs::read_to_string(&path) {
         Ok(body) => (StatusCode::OK, body).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, format!(\"missing {}\", file)).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, format!("missing {}", file)).into_response(),
     }
 }

@@ -10,6 +10,7 @@ use transformer_neo::pipeline::{
     FactFetcher, GapResolver, IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
     WebFetcher,
 };
+use transformer_neo::pipeline::traits::VerificationResult;
 
 enum Verifier {
     Dummy(DummyVerifier),
@@ -22,7 +23,7 @@ impl ClaimVerifier for Verifier {
         &self,
         fragment: &str,
         facts: &[transformer_neo::models::RequiredFact],
-    ) -> anyhow::Result<VerificationStatus> {
+    ) -> anyhow::Result<VerificationResult> {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,

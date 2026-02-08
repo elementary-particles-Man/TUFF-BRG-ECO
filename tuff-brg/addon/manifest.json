@@ -1,7 +1,27 @@
 {
-  "name": "TUFF-BRG Addon",
-  "version": "0.1.0",
   "manifest_version": 3,
-  "permissions": ["storage"],
-  "options_page": "options.html"
+  "name": "TUFF-BRG Addon",
+  "version": "1.1",
+  "description": "TUFF Bridge Monitor",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://gemini.google.com/*"
+  ],
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "booster.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
 }
