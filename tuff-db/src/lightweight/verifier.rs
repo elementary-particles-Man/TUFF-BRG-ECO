@@ -140,6 +140,13 @@ pub struct LightweightHit {
     pub mode: MeaningMatchMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightweightCheckStatus {
+    Hit,
+    Mismatch,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct LightweightVerifier {
     meaning_db: MeaningDb,
@@ -165,6 +172,26 @@ impl LightweightVerifier {
     pub fn verify_fragment(&self, fragment: &str) -> Option<LightweightHit> {
         let (tag, payload) = split_tag_payload(fragment);
         self.verify_tag_payload(&tag, &payload)
+    }
+
+    pub fn check_fragment(&self, fragment: &str) -> LightweightCheckStatus {
+        let (tag, payload) = split_tag_payload(fragment);
+        self.check_tag_payload(&tag, &payload)
+    }
+
+    pub fn check_tag_payload(&self, tag: &str, payload: &str) -> LightweightCheckStatus {
+        let Some(normalized_tag) = normalize_tag_key(tag) else {
+            return LightweightCheckStatus::Unknown;
+        };
+        let Some(required) = self.meaning_db.meaning_for(&normalized_tag) else {
+            return LightweightCheckStatus::Unknown;
+        };
+        let mode = match_mode_for_tag(&normalized_tag);
+        if meaning_matches(mode, required, payload) {
+            LightweightCheckStatus::Hit
+        } else {
+            LightweightCheckStatus::Mismatch
+        }
     }
 
     pub fn verify_tag_payload(&self, tag: &str, payload: &str) -> Option<LightweightHit> {
@@ -195,7 +222,7 @@ impl Verifier {
 
     pub fn verify_tag_payload(&self, tag: &str, payload: &str) -> bool {
         let lw = LightweightVerifier::new(self.meaning_db.clone());
-        self.meaning_db.meaning_for(tag).is_none() || lw.verify_tag_payload(tag, payload).is_some()
+        lw.check_tag_payload(tag, payload) != LightweightCheckStatus::Mismatch
     }
 }
 

@@ -23,7 +23,9 @@ use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::time::{timeout, Duration};
 use transformer_neo::db::{OpKind, TuffDb, TuffEngine};
-use transformer_neo::lightweight::{LightweightVerifier, MeaningDb, MeaningMatchMode};
+use transformer_neo::lightweight::{
+    LightweightCheckStatus, LightweightVerifier, MeaningDb, MeaningMatchMode,
+};
 use transformer_neo::models::{AgentIdentity, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
@@ -289,28 +291,65 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             log_line("INGEST: start");
 
             if let Some(lightweight) = state_for_worker.lightweight_verifier.as_ref() {
-                if let Some(hit) = lightweight.verify_fragment(&fragment) {
-                    let mode = match hit.mode {
-                        MeaningMatchMode::Exact => "exact",
-                        MeaningMatchMode::Contains => "contains",
-                    };
-                    let judge = Message::JudgeResult {
-                        id: Id::new().to_string(),
-                        ts: Utc::now().to_rfc3339(),
-                        payload: JudgeResultPayload {
-                            status: ProtoStatus::White,
-                            reason: format!("source=Cache tag={} mode={}", hit.tag, mode),
-                            confidence: 1.0,
-                            claim: fragment.clone(),
-                            evidence_count: 0,
-                            abstract_id: None,
-                        },
-                    };
-                    let _ = tx_for_worker
-                        .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
-                        .await;
-                    log_line("INGEST: cache hit");
-                    continue;
+                match lightweight.check_fragment(&fragment) {
+                    LightweightCheckStatus::Hit => {
+                        if let Some(hit) = lightweight.verify_fragment(&fragment) {
+                            let mode = match hit.mode {
+                                MeaningMatchMode::Exact => "exact",
+                                MeaningMatchMode::Contains => "contains",
+                            };
+                            let judge = Message::JudgeResult {
+                                id: Id::new().to_string(),
+                                ts: Utc::now().to_rfc3339(),
+                                payload: JudgeResultPayload {
+                                    status: ProtoStatus::White,
+                                    reason: format!("source=Cache tag={} mode={}", hit.tag, mode),
+                                    confidence: 1.0,
+                                    claim: fragment.clone(),
+                                    evidence_count: 0,
+                                    abstract_id: None,
+                                },
+                            };
+                            let _ = tx_for_worker
+                                .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
+                                .await;
+                            log_line("INGEST: cache hit");
+                            continue;
+                        }
+                    }
+                    LightweightCheckStatus::Mismatch => {
+                        let judge = Message::JudgeResult {
+                            id: Id::new().to_string(),
+                            ts: Utc::now().to_rfc3339(),
+                            payload: JudgeResultPayload {
+                                status: ProtoStatus::Smoke,
+                                reason: "source=Cache mismatch".to_string(),
+                                confidence: 0.0,
+                                claim: fragment.clone(),
+                                evidence_count: 0,
+                                abstract_id: None,
+                            },
+                        };
+                        let _ = tx_for_worker
+                            .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
+                            .await;
+                        let stop = Message::ControlCommand {
+                            id: "system".to_string(),
+                            ts: Utc::now().to_rfc3339(),
+                            payload: ControlCommandPayload {
+                                command: ControlCommand::Stop,
+                                trigger: ControlTrigger::SmokeDetected,
+                                detail: "FastPath mismatch detected".to_string(),
+                                manual_override: None,
+                            },
+                        };
+                        let _ = tx_for_worker
+                            .send(WsMessage::Text(serde_json::to_string(&stop).unwrap_or_default()))
+                            .await;
+                        log_line("INGEST: cache mismatch -> stop");
+                        continue;
+                    }
+                    LightweightCheckStatus::Unknown => {}
                 }
             }
 
@@ -366,6 +405,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
                 .await;
             log_line("WS: JudgeResult sent");
+
+            if status == VerificationStatus::Smoke || confidence < state_for_worker.stop_threshold {
+                let trigger = if status == VerificationStatus::Smoke {
+                    ControlTrigger::SmokeDetected
+                } else {
+                    ControlTrigger::LowConfidence
+                };
+                let stop = Message::ControlCommand {
+                    id: "system".to_string(),
+                    ts: Utc::now().to_rfc3339(),
+                    payload: ControlCommandPayload {
+                        command: ControlCommand::Stop,
+                        trigger,
+                        detail: format!("status={:?} confidence={:.3}", status, confidence),
+                        manual_override: None,
+                    },
+                };
+                let _ = tx_for_worker
+                    .send(WsMessage::Text(serde_json::to_string(&stop).unwrap_or_default()))
+                    .await;
+                log_line("WS: ControlCommand STOP sent");
+            }
         }
     });
 

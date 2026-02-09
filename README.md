@@ -7,10 +7,10 @@
 ## TUFF-BRG-ECO とは
 ECO (Ecosystem) は、tuff-db（コア）と tuff-brg（ブリッジ）が単一のワークスペースで連携し、事実の不動点を共有する統合運用環境を指します。
 
-## アーキテクチャ層
-- TUFF-DB (Core): 事実の保管庫。WALと型による歴史的整合性の管理。
-- TUFF-BRG (Middleware): アドオンとDBを繋ぐブリッジ。リアルタイム検証と計算代行の中枢。
-- TUFF-BRG-Extension (Add-on): `tuff-brg/addon/` に配置。現在はミドルウェアに内包されているが、将来的に独立配布・マルチプラットフォーム展開が可能。
+## アーキテクチャ（3-Layer）
+- Addon (`tuff-brg/addon/`): DOM断片を収集して Bridge に送信。セレクタ不一致時は警告バナーを表示。
+- Bridge (`tuff-brg`): WebSocket受信、Hybrid判定（Fast Path -> LLM Path）、STOP/CONTINUE制御を実施。
+- Lightweight DB (`tuff-db/src/lightweight`): 平文WAL + インメモリTag/Meaningで高速照合。WAL破損時は recovery mode に従って復旧。
 
 ## 主要メカニズム
 - Physical Identity Protocol: AIのOrigin（起源）を固定し責任帰属を明確化。
@@ -40,6 +40,30 @@ cargo run -p tuff_brg
 | `AI_ORIGIN` | AIの自己識別子。Transitionに刻印される。 | `Gemini`, `GPT-4o` |
 | `AGENT_ROLE` | 一時的な役割（任意）。 | `Verifier`, `Coder` |
 | `OPENAI_API_KEY` | 検証用LLMのAPIキー。 | `sk-...` |
+| `TUFF_FAST_PATH` | Lightweight Fast Path を有効化（`0`で無効）。 | `1` |
+| `TUFF_LIGHTWEIGHT_MEANING_PATH` | `meaning.db` のパス。 | `_tuffdb/lightweight/meaning.db` |
+| `TUFF_WAL_RECOVERY_MODE` | WAL復旧方針（`strict` または `truncate`）。 | `truncate` |
+
+## meaning.db フォーマット
+- 1行1エントリの `tag=meaning_snippet`。
+- コメント行は `#` で開始。
+- 例:
+
+```text
+prime-minister=Sanae Takaichi
+shigeru-ishiba=Former Candidate
+japan-leader=Takaichi
+```
+
+## Live Demo（ハルシネーション遮断）
+```bash
+# Anchor Facts を作成して実弾テスト
+scripts/live_fire_test.sh
+```
+
+期待結果:
+- `prime-minister\t...Shigeru Ishiba...` は `JudgeResult: SMOKE/GRAY_BLACK` + `ControlCommand: STOP`
+- `prime-minister\t...Sanae Takaichi...` は `JudgeResult: WHITE/GRAY_WHITE`
 
 ## 商用利用
 - 商用利用の方は `COMMERCIAL.md` をご確認ください。
