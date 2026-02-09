@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TUFF-BRG</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --btn: #2563eb;
+      --btn-hover: #1d4ed8;
+    }
+    body {
+      margin: 0;
+      width: 260px;
+      background: linear-gradient(160deg, var(--bg), #1f2937);
+      color: var(--text);
+      font: 13px/1.4 "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+    }
+    .wrap {
+      padding: 12px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+    p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 10px;
+      background: var(--btn);
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: var(--btn-hover);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>TUFF-BRG</h1>
+    <p>ローカルのヒストリビューアを開きます。</p>
+    <button id="open-history">履歴を開く</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

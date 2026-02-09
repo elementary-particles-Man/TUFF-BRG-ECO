@@ -12,6 +12,10 @@
     "http://127.0.0.1/*",
     "https://gemini.google.com/*"
   ],
+  "action": {
+    "default_title": "TUFF-BRG",
+    "default_popup": "popup.html"
+  },
   "options_page": "options.html",
   "content_scripts": [
     {

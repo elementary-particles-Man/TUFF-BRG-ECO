@@ -12,11 +12,12 @@ use dotenv::dotenv;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, watch};
 use futures_util::SinkExt;
+use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -504,17 +505,110 @@ async fn history_page(State(state): State<AppState>) -> Html<String> {
 }
 
 async fn history_latest(State(state): State<AppState>) -> Response {
-    serve_history_json(&state, "latest_facts.json")
+    let mut value = read_json_or_default(
+        &state.history_dir.join("latest_facts.json"),
+        json!({
+            "last_updated": Utc::now().to_rfc3339(),
+            "facts": []
+        }),
+    );
+    merge_lightweight_latest(&mut value, &lightweight_wal_path());
+    (StatusCode::OK, value.to_string()).into_response()
 }
 
 async fn history_timeline(State(state): State<AppState>) -> Response {
-    serve_history_json(&state, "timeline.json")
+    let mut value = read_json_or_default(&state.history_dir.join("timeline.json"), json!([]));
+    merge_lightweight_timeline(&mut value, &lightweight_wal_path());
+    (StatusCode::OK, value.to_string()).into_response()
 }
 
-fn serve_history_json(state: &AppState, file: &str) -> Response {
-    let path = state.history_dir.join(file);
-    match fs::read_to_string(&path) {
-        Ok(body) => (StatusCode::OK, body).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, format!("missing {}", file)).into_response(),
+fn read_json_or_default(path: &Path, default_value: Value) -> Value {
+    match fs::read_to_string(path) {
+        Ok(body) => serde_json::from_str(&body).unwrap_or(default_value),
+        Err(_) => default_value,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LightweightWalRecord {
+    tag: String,
+    meaning: String,
+}
+
+fn lightweight_wal_path() -> PathBuf {
+    env::var("TUFF_LIGHTWEIGHT_WAL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("tuff-db-lightweight.wal"))
+}
+
+fn load_lightweight_records(path: &Path) -> Vec<LightweightWalRecord> {
+    let text = match fs::read_to_string(path) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let tag = parts.next()?.trim();
+            let meaning = parts.next()?.trim();
+            let _sha = parts.next()?.trim();
+            if tag.is_empty() || meaning.is_empty() {
+                return None;
+            }
+            Some(LightweightWalRecord {
+                tag: tag.to_string(),
+                meaning: meaning.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn merge_lightweight_latest(root: &mut Value, wal_path: &Path) {
+    let records = load_lightweight_records(wal_path);
+    if records.is_empty() {
+        return;
+    }
+    if root.get("last_updated").is_none() {
+        root["last_updated"] = json!(Utc::now().to_rfc3339());
+    }
+    let facts = root["facts"].as_array_mut();
+    let Some(facts) = facts else { return };
+
+    for (idx, rec) in records.into_iter().enumerate() {
+        facts.push(json!({
+            "topic_id": format!("lw:{}", rec.tag),
+            "subject": "LIGHTWEIGHT",
+            "current_value": rec.meaning,
+            "status": "VERIFIED",
+            "confidence": 1.0,
+            "confidence_kind": "FAST_PATH",
+            "agent_origin": "LIGHTWEIGHT_DB",
+            "source_op_id": format!("lw_{idx:08}"),
+            "last_event_ts": Utc::now().to_rfc3339(),
+            "is_human_overridden": false
+        }));
+    }
+}
+
+fn merge_lightweight_timeline(root: &mut Value, wal_path: &Path) {
+    let records = load_lightweight_records(wal_path);
+    if records.is_empty() {
+        return;
+    }
+    let timelines = root.as_array_mut();
+    let Some(timelines) = timelines else { return };
+
+    for (idx, rec) in records.into_iter().enumerate() {
+        timelines.push(json!({
+            "topic_id": format!("lw:{}", rec.tag),
+            "events": [{
+                "op_id": format!("lw_{idx:08}"),
+                "timestamp": Utc::now().to_rfc3339(),
+                "type": "INGEST",
+                "agent_origin": "LIGHTWEIGHT_DB",
+                "status_after": "VERIFIED",
+                "reason": rec.meaning
+            }]
+        }));
     }
 }

@@ -614,8 +614,36 @@ function getNodeStorageBaseKey(node, role) {
   return getFallbackStorageKey(node, role);
 }
 
+function canonicalTurnNode(node) {
+  if (!(node instanceof HTMLElement)) return null;
+  const roleRoot = node.closest('[data-message-author-role]');
+  if (roleRoot instanceof HTMLElement) return roleRoot;
+  const article = node.closest("article");
+  if (article instanceof HTMLElement) return article;
+  return node;
+}
+
+function cleanupNodeBadges(node) {
+  if (!(node instanceof HTMLElement)) return;
+  // Remove legacy nested badges that were attached to descendants.
+  node.querySelectorAll(".gpt-booster-ts").forEach((el) => {
+    if (el.parentElement !== node) el.remove();
+  });
+  const directBadges = Array.from(node.children).filter(
+    (el) => el instanceof HTMLElement && el.classList.contains("gpt-booster-ts")
+  );
+  if (directBadges.length > 1) {
+    directBadges.slice(1).forEach((el) => el.remove());
+  }
+}
+
+function resetTimestampBadges() {
+  document.querySelectorAll(".gpt-booster-ts").forEach((el) => el.remove());
+}
+
 function upsertVisibleTimestamp(node, role, options = {}) {
   if (!(node instanceof HTMLElement)) return;
+  cleanupNodeBadges(node);
   const markAssistantDone = Boolean(options.markAssistantDone) && role === "assistant";
   const storageKey = getNodeStorageBaseKey(node, role);
   const endStorageKey = storageKey ? `${storageKey}:end` : null;
@@ -701,7 +729,6 @@ function detectRole(node) {
   const roleAttr = node.getAttribute("data-message-author-role");
   if (roleAttr) return roleAttr.toLowerCase();
 
-  if (node.matches(selectorFor("assistant"))) return "assistant";
   const tagName = node.tagName.toLowerCase();
   const testId = node.getAttribute("data-test-id") || "";
 
@@ -715,17 +742,22 @@ function detectRole(node) {
 function annotateTurns() {
   if (responseSafeMode) return;
   const turns = document.querySelectorAll(selectorFor("turns"));
+  const seen = new Set();
   turns.forEach((node) => {
-    if (!(node instanceof HTMLElement)) return;
-    const role = detectRole(node);
+    const root = canonicalTurnNode(node);
+    if (!(root instanceof HTMLElement)) return;
+    if (seen.has(root)) return;
+    seen.add(root);
+    const role = detectRole(root);
     if (!role) return;
+    if (extractNodeText(root).length < 2) return;
 
     if (role === "user") {
-      upsertVisibleTimestamp(node, "user");
+      upsertVisibleTimestamp(root, "user");
       return;
     }
     if (role === "assistant") {
-      upsertVisibleTimestamp(node, "assistant");
+      upsertVisibleTimestamp(root, "assistant");
     }
   });
 }
@@ -846,6 +878,7 @@ function start() {
   if (!document.body) return;
   refreshResponseSafeMode();
   ensureTimestampStyle();
+  resetTimestampBadges();
   loadAddonSettings().finally(() => {
     wsConnect();
   });
