@@ -12,6 +12,7 @@ use dotenv::dotenv;
 use futures_util::StreamExt;
 use tokio::sync::{mpsc, watch};
 use futures_util::SinkExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
 use std::fs;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use transformer_neo::db::{OpKind, TuffDb, TuffEngine};
 use transformer_neo::lightweight::{
@@ -36,9 +38,17 @@ use transformer_neo::pipeline::{
 
 mod api;
 use api::message::{
-    ControlCommand, ControlCommandPayload, ControlTrigger, JudgeResultPayload, Message,
-    StreamFragmentPayload, VerificationStatus as ProtoStatus,
+    ApproveFactPayload, ControlCommand, ControlCommandPayload, ControlTrigger, JudgeResultPayload,
+    Message, ProposeFactPayload, StreamFragmentPayload, VerificationStatus as ProtoStatus,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingFact {
+    id: String,
+    tag: String,
+    value: String,
+    created_at: String,
+}
 
 enum Verifier {
     Dummy(DummyVerifier),
@@ -105,11 +115,13 @@ struct AppState {
             TuffEngine,
         >,
     >,
-    lightweight_verifier: Option<Arc<LightweightVerifier>>,
+    lightweight_verifier: Option<Arc<RwLock<LightweightVerifier>>>,
     gap_resolver: Option<Arc<LlmGapResolver>>,
     stop_threshold: f32,
     history_dir: PathBuf,
     history_html: Arc<String>,
+    pending_path: PathBuf,
+    meaning_path: PathBuf,
 }
 
 #[tokio::main]
@@ -163,6 +175,12 @@ async fn main() -> anyhow::Result<()> {
 
     let history_dir = PathBuf::from(env::var("TUFF_HISTORY_OUT").unwrap_or_else(|_| "history_out".to_string()));
     let history_html = include_str!("../assets/history_viewer.html").to_string();
+    let meaning_path = env::var("TUFF_LIGHTWEIGHT_MEANING_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| wal_dir.join("lightweight").join("meaning.db"));
+    let pending_path = env::var("TUFF_PENDING_FACT_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| wal_dir.join("lightweight").join("meaning.pending"));
 
     let state = AppState {
         pipeline: Arc::new(pipeline),
@@ -171,6 +189,8 @@ async fn main() -> anyhow::Result<()> {
         stop_threshold,
         history_dir,
         history_html: Arc::new(history_html),
+        pending_path,
+        meaning_path,
     };
 
     let app = Router::new()
@@ -178,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/history", get(history_page))
         .route("/history/api/latest", get(history_latest))
         .route("/history/api/timeline", get(history_timeline))
+        .route("/facts/pending", get(facts_pending))
         .with_state(state);
 
     let addr: SocketAddr = "127.0.0.1:8787".parse()?;
@@ -204,7 +225,7 @@ fn parse_meaning_env_pairs() -> std::collections::HashMap<String, String> {
     map
 }
 
-fn init_lightweight_verifier(wal_dir: &PathBuf) -> Option<Arc<LightweightVerifier>> {
+fn init_lightweight_verifier(wal_dir: &PathBuf) -> Option<Arc<RwLock<LightweightVerifier>>> {
     let enabled = env::var("TUFF_FAST_PATH")
         .map(|v| v.trim() != "0")
         .unwrap_or(true);
@@ -225,7 +246,7 @@ fn init_lightweight_verifier(wal_dir: &PathBuf) -> Option<Arc<LightweightVerifie
     };
     merged.merge(parse_meaning_env_pairs());
     let verifier = LightweightVerifier::new(merged);
-    Some(Arc::new(verifier))
+    Some(Arc::new(RwLock::new(verifier)))
 }
 
 async fn shutdown_signal() {
@@ -292,9 +313,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             log_line("INGEST: start");
 
             if let Some(lightweight) = state_for_worker.lightweight_verifier.as_ref() {
-                match lightweight.check_fragment(&fragment) {
+                let lw = lightweight.read().await;
+                match lw.check_fragment(&fragment) {
                     LightweightCheckStatus::Hit => {
-                        if let Some(hit) = lightweight.verify_fragment(&fragment) {
+                        if let Some(hit) = lw.verify_fragment(&fragment) {
                             let mode = match hit.mode {
                                 MeaningMatchMode::Exact => "exact",
                                 MeaningMatchMode::Contains => "contains",
@@ -489,6 +511,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             continue;
         }
 
+        if let Message::ProposeFact { payload, .. } = parsed {
+            let _ = handle_proposal(&state, payload).await;
+            continue;
+        }
+
+        if let Message::ApproveFact { payload, .. } = parsed {
+            let _ = handle_approve(&state, payload).await;
+            continue;
+        }
+
         if let Message::StreamFragment { payload, .. } = parsed {
             log_line("WS: StreamFragment received");
             let StreamFragmentPayload { fragment, .. } = payload;
@@ -520,6 +552,15 @@ async fn history_timeline(State(state): State<AppState>) -> Response {
     let mut value = read_json_or_default(&state.history_dir.join("timeline.json"), json!([]));
     merge_lightweight_timeline(&mut value, &lightweight_wal_path());
     (StatusCode::OK, value.to_string()).into_response()
+}
+
+async fn facts_pending(State(state): State<AppState>) -> Response {
+    let items = load_pending_facts(&state.pending_path).await;
+    (
+        StatusCode::OK,
+        serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string()),
+    )
+        .into_response()
 }
 
 fn read_json_or_default(path: &Path, default_value: Value) -> Value {
@@ -611,4 +652,91 @@ fn merge_lightweight_timeline(root: &mut Value, wal_path: &Path) {
             }]
         }));
     }
+}
+
+async fn handle_proposal(state: &AppState, payload: ProposeFactPayload) -> anyhow::Result<()> {
+    let tag = payload.tag.trim().to_string();
+    let value = payload.value.trim().to_string();
+    if tag.is_empty() || value.is_empty() {
+        return Ok(());
+    }
+    let item = PendingFact {
+        id: Id::new().to_string(),
+        tag,
+        value,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    append_pending_fact(&state.pending_path, &item).await?;
+    Ok(())
+}
+
+async fn handle_approve(state: &AppState, payload: ApproveFactPayload) -> anyhow::Result<()> {
+    let mut items = load_pending_facts(&state.pending_path).await;
+    if let Some(pos) = items.iter().position(|v| v.id == payload.id) {
+        let item = items.remove(pos);
+        save_pending_facts(&state.pending_path, &items).await?;
+
+        if let Some(lw) = state.lightweight_verifier.as_ref() {
+            let mut guard = lw.write().await;
+            let _ = guard.insert_meaning(&state.meaning_path, &item.tag, &item.value);
+            let _ = guard.reload(&state.meaning_path);
+        } else {
+            append_meaning_line(&state.meaning_path, &item.tag, &item.value).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn append_pending_fact(path: &Path, item: &PendingFact) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let line = serde_json::to_string(item)? + "\n";
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
+}
+
+async fn load_pending_facts(path: &Path) -> Vec<PendingFact> {
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<PendingFact>(line).ok())
+        .collect()
+}
+
+async fn save_pending_facts(path: &Path, items: &[PendingFact]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut out = String::new();
+    for item in items {
+        out.push_str(&serde_json::to_string(item)?);
+        out.push('\n');
+    }
+    tokio::fs::write(path, out).await?;
+    Ok(())
+}
+
+async fn append_meaning_line(path: &Path, tag: &str, value: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    file.write_all(format!("{}={}\n", tag, value).as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }

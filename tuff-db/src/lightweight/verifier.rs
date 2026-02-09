@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 pub const TAG_KEY_MAX_LEN: usize = 64;
@@ -207,6 +208,34 @@ impl LightweightVerifier {
         } else {
             None
         }
+    }
+
+    pub fn reload(&mut self, meaning_path: impl AsRef<Path>) -> std::io::Result<()> {
+        self.meaning_db = MeaningDb::from_path(meaning_path)?;
+        Ok(())
+    }
+
+    pub fn insert_meaning(
+        &mut self,
+        meaning_path: impl AsRef<Path>,
+        tag: &str,
+        value: &str,
+    ) -> std::io::Result<()> {
+        let path = meaning_path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        file.write_all(format!("{}={}\n", tag.trim(), value.trim()).as_bytes())?;
+        file.flush()?;
+
+        let mut m = HashMap::new();
+        m.insert(tag.to_string(), value.to_string());
+        self.meaning_db.merge(m);
+        Ok(())
     }
 }
 

@@ -7,53 +7,54 @@
   <style>
     :root {
       --bg: #0f172a;
-      --card: #111827;
+      --panel: #111827;
+      --line: #334155;
       --text: #e5e7eb;
       --muted: #9ca3af;
-      --btn: #2563eb;
-      --btn-hover: #1d4ed8;
+      --primary: #2563eb;
+      --ok: #16a34a;
     }
     body {
       margin: 0;
-      width: 260px;
-      background: linear-gradient(160deg, var(--bg), #1f2937);
+      width: 340px;
+      max-height: 520px;
+      background: linear-gradient(170deg, var(--bg), #1f2937);
       color: var(--text);
-      font: 13px/1.4 "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
+      font: 12px/1.4 "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif;
     }
-    .wrap {
-      padding: 12px;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: .02em;
-    }
-    p {
-      margin: 0 0 10px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-    button {
-      width: 100%;
+    .wrap { padding: 10px; }
+    .head { display: flex; gap: 8px; margin-bottom: 10px; }
+    .btn {
       border: 0;
       border-radius: 8px;
-      padding: 9px 10px;
-      background: var(--btn);
-      color: #fff;
-      font-size: 13px;
+      padding: 7px 9px;
+      font-size: 12px;
       cursor: pointer;
+      color: #fff;
+      background: var(--primary);
     }
-    button:hover {
-      background: var(--btn-hover);
+    .btn.ok { background: var(--ok); }
+    .muted { color: var(--muted); margin: 4px 0 8px; }
+    #list { display: grid; gap: 8px; max-height: 430px; overflow: auto; }
+    .item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
     }
+    .tag { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+    .val { color: var(--text); word-break: break-word; margin-bottom: 6px; }
+    .actions { display: flex; gap: 6px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>TUFF-BRG</h1>
-    <p>ローカルのヒストリビューアを開きます。</p>
-    <button id="open-history">履歴を開く</button>
+    <div class="head">
+      <button id="open-history" class="btn">履歴を開く</button>
+      <button id="refresh" class="btn">再読込</button>
+    </div>
+    <div class="muted">Pending Fact Proposals</div>
+    <div id="list"></div>
   </div>
   <script src="popup.js"></script>
 </body>

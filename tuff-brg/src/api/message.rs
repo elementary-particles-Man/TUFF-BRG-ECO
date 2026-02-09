@@ -23,6 +23,16 @@ pub enum Message {
         ts: String,
         payload: AuthPayload,
     },
+    ProposeFact {
+        id: String,
+        ts: String,
+        payload: ProposeFactPayload,
+    },
+    ApproveFact {
+        id: String,
+        ts: String,
+        payload: ApproveFactPayload,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,4 +108,15 @@ pub struct ManualOverrideMeta {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthPayload {
     pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposeFactPayload {
+    pub tag: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApproveFactPayload {
+    pub id: String,
 }
