@@ -1,3 +1,4 @@
+use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io;
@@ -44,8 +45,9 @@ impl WalStorage {
 
         let offset = file.metadata().await?.len();
         let escaped = escape_payload(payload);
-        let checksum = sha256_hex(&format!("{tag}\t{escaped}"));
-        let line = format!("{tag}\t{escaped}\t{checksum}\n");
+        let recorded_at = Utc::now().to_rfc3339();
+        let checksum = sha256_hex(&format!("{tag}\t{escaped}\t{recorded_at}"));
+        let line = format!("{tag}\t{escaped}\t{recorded_at}\t{checksum}\n");
 
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
@@ -103,7 +105,16 @@ impl WalStorage {
                     .await;
             };
 
-            let expected = sha256_hex(&format!("{}\t{}", record.tag, escape_payload(&record.payload)));
+            let expected = if let Some(recorded_at) = record.recorded_at.as_deref() {
+                sha256_hex(&format!(
+                    "{}\t{}\t{}",
+                    record.tag,
+                    escape_payload(&record.payload),
+                    recorded_at
+                ))
+            } else {
+                sha256_hex(&format!("{}\t{}", record.tag, escape_payload(&record.payload)))
+            };
             if expected != record.checksum {
                 return self
                     .handle_corruption(mode, last_good_offset, offset, "checksum mismatch")
@@ -151,18 +162,27 @@ impl WalStorage {
 pub struct WalRecord {
     pub tag: String,
     pub payload: String,
+    pub recorded_at: Option<String>,
     pub checksum: String,
 }
 
 fn parse_line(line: &str) -> Option<WalRecord> {
-    let mut parts = line.trim_end().splitn(3, '\t');
-    let tag = parts.next()?.to_string();
-    let payload_escaped = parts.next()?.to_string();
-    let checksum = parts.next()?.to_string();
+    let parts: Vec<&str> = line.trim_end().split('\t').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let tag = parts[0].to_string();
+    let payload_escaped = parts[1].to_string();
+    let (recorded_at, checksum) = if parts.len() >= 4 {
+        (Some(parts[2].to_string()), parts[3].to_string())
+    } else {
+        (None, parts[2].to_string())
+    };
     let payload = unescape_payload(&payload_escaped);
     Some(WalRecord {
         tag,
         payload,
+        recorded_at,
         checksum,
     })
 }

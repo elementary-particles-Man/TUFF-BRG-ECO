@@ -1,10 +1,9 @@
 // GPT-Booster v5.2 ultra-passive — ChatGPT output aware (standalone, body observer)
 
 const DEBUG = false;
-const DEV_MODE = false;
 const BUILD_TAG = "booster-20260210-2";
 if (DEBUG) console.info("[TUFF booster]", BUILD_TAG);
-const CHATGPT_EMERGENCY_DISABLE = false;
+const CHATGPT_EMERGENCY_DISABLE = true;
 const OBS_CONFIG = { childList: true, subtree: true };
 const TIMESTAMP_STYLE_ID = "gpt-booster-visible-timestamp-style";
 const BASE_SELECTORS = {
@@ -14,7 +13,8 @@ const BASE_SELECTORS = {
       '.user-query',
       '[data-test-id="user-query"]',
       'user-query',
-      '[data-testid*="user"]'
+      '[data-testid*="user"]',
+      'article:has([data-message-author-role="user"])'
     ].join(", "),
     assistant: [
       '[data-message-author-role="assistant"]',
@@ -22,7 +22,8 @@ const BASE_SELECTORS = {
       '[data-test-id="model-response"]',
       'message-content',
       '[data-testid*="assistant"]',
-      '[data-testid*="model"]'
+      '[data-testid*="model"]',
+      'article:has([data-message-author-role="assistant"])'
     ].join(", "),
     rootFallback: [
       '[role="article"]',
@@ -47,25 +48,23 @@ const BASE_SELECTORS = {
   gemini: {
     user: [
       'div[data-message-author-role="user"]',
-      '[data-test-id="user-query"]',
-      'user-query',
       'div[class*="user-query"]'
     ].join(", "),
     assistant: [
       'div[data-message-author-role="model"]',
       'div[data-message-author-role="assistant"]',
-      '[data-test-id="model-response"]',
-      'model-response',
-      'message-content[data-message-author-role="model"]',
-      'message-content[data-message-author-role="assistant"]'
+      'div.message-content',
+      'div[class*="message-content"]',
+      'div[class*="model-response"]',
+      'div[class*="response"]',
+      'div[aria-label*="Model response"]',
+      'div[aria-live="polite"]'
     ].join(", "),
     turns: [
       'div[data-message-author-role]',
-      '[data-test-id="user-query"]',
-      '[data-test-id="model-response"]',
-      'user-query',
-      'model-response',
-      'message-content[data-message-author-role]'
+      'div.message-content',
+      'div[class*="message-content"]',
+      'div[class*="response"]'
     ].join(", ")
   }
 };
@@ -76,20 +75,12 @@ const WS_RETRY_BASE_MS = 800;
 const WS_RETRY_MAX_MS = 8000;
 const WS_SEND_DEBOUNCE_MS = 180;
 const SEND_DELAY = 600;
-const CHATGPT_POLL_INTERVAL_MS = 1200;
-const CHATGPT_STABLE_HOLD_MS = 1200;
 const CHATGPT_DOM_SAFE_MODE = true;
-const SHOW_ALL_TURN_TIMESTAMPS = true;
 const STOP_OVERLAY_ID = "tuff-brg-stop-overlay";
 const CONTINUE_BUTTON_ID = "tuff-brg-continue-btn";
 const META_COPY_ID = "tuff-brg-meta-copy";
 const RETRY_BUTTON_ID = "tuff-brg-retry-btn";
 const SELECTOR_WARNING_ID = "tuff-brg-selector-warning";
-const DECISION_FLOAT_ID = "tuff-brg-decision-float";
-const DECISION_STYLE_ID = "tuff-brg-decision-style";
-const USER_TS_LITERAL_PREFIX = "USER";
-const USER_TS_COOLDOWN_MS = 600;
-const PAUSE_KEY = "TUFF_ADDON_PAUSED";
 
 let lastScrollTop = null;
 let activeAssistant = null;
@@ -107,7 +98,6 @@ let pendingFragments = [];
 let convoId = crypto.randomUUID();
 let seq = 0;
 let lastSentText = "";
-let lastSentHash = "";
 let sendTimer = null;
 let lastAbstractId = null;
 let stopActive = false;
@@ -124,22 +114,11 @@ let activeSelectors = buildSelectorConfig();
 let selectorMissSince = 0;
 let chatgptLiteTimer = null;
 let tsCopyHotkeyBound = false;
-let chatgptTick = 0;
-let decisionFadeTimer = null;
-let lastJudgeFragmentHash = "";
-const sentHashOrder = [];
-const hashToTurnKey = new Map();
-const userTsInjectedAt = new WeakMap();
-let addonPaused = false;
 
 window.__GPT_BOOSTER_NEW__ = true;
 
 function nowRfc3339() {
   return new Date().toISOString();
-}
-
-function isAddonPaused() {
-  return addonPaused;
 }
 
 function isGeminiPage() {
@@ -202,7 +181,7 @@ function selectorFor(kind) {
 }
 
 function debugLogFragment(source, text) {
-  if (!DEBUG && !DEV_MODE) return;
+  if (!DEBUG) return;
   const now = Date.now();
   if (text === lastDebugFragment && now - lastDebugTs < 1000) return;
   lastDebugFragment = text;
@@ -224,27 +203,23 @@ function wsConnect() {
   try {
     ws = new WebSocket(WS_URL);
   } catch (_) {
-    if (DEV_MODE) console.warn("[TUFF][WS] connect failed", WS_URL);
     wsScheduleReconnect();
     return;
   }
 
   ws.addEventListener("open", () => {
     wsReady = true;
-    if (DEV_MODE) console.info("[TUFF][WS] connected", WS_URL);
     wsRetryDelay = WS_RETRY_BASE_MS;
     flushPendingFragments();
   });
 
   ws.addEventListener("close", () => {
     wsReady = false;
-    if (DEV_MODE) console.warn("[TUFF][WS] closed");
     wsScheduleReconnect();
   });
 
   ws.addEventListener("error", () => {
     wsReady = false;
-    if (DEV_MODE) console.warn("[TUFF][WS] error");
     wsScheduleReconnect();
   });
 
@@ -265,168 +240,17 @@ function wsConnect() {
       lastJudgeReason = msg.payload.reason || null;
       lastJudgeClaim = msg.payload.claim || null;
       lastJudgeTs = msg.ts || nowRfc3339();
-      const hashFromPayload =
-        (msg.payload.fragment_hash && String(msg.payload.fragment_hash)) ||
-        (msg.payload.claim ? hashText(String(msg.payload.claim)) : "");
-      if (hashFromPayload) {
-        lastJudgeFragmentHash = hashFromPayload;
-      }
     }
 
     if (msg.type === "ControlCommand" && msg.payload) {
-      const decision = String(msg.payload.decision || msg.payload.command || "").toUpperCase();
-      if (decision !== "STOP" && decision !== "CONTINUE") return;
-      const hashFromPayload =
-        (msg.payload.fragment_hash && String(msg.payload.fragment_hash)) ||
-        (msg.payload.claim_hash && String(msg.payload.claim_hash)) ||
-        "";
-      const decisionHash = hashFromPayload || lastJudgeFragmentHash || "";
-      const detail = msg.payload.detail || decision;
-      if (DEV_MODE) {
-        console.log("[TUFF][decision]", { decision, fragment_hash: decisionHash, payload: msg.payload });
-      }
-      if (isChatGptPage()) {
-        applyDecisionToTurn(decision, decisionHash, detail);
-      } else if (decision === "STOP") {
-        activateStopOverlay(detail);
-      } else if (decision === "CONTINUE") {
+      const cmd = msg.payload.command;
+      if (cmd === "STOP") {
+        activateStopOverlay(msg.payload.detail || "STOP");
+      } else if (cmd === "CONTINUE") {
         deactivateStopOverlay();
       }
     }
   });
-}
-
-function ensureDecisionStyle() {
-  if (document.getElementById(DECISION_STYLE_ID)) return;
-  const style = document.createElement("style");
-  style.id = DECISION_STYLE_ID;
-  style.textContent = `
-#${DECISION_FLOAT_ID} {
-  position: fixed;
-  right: 14px;
-  top: 14px;
-  z-index: 2147483646;
-  color: #fff;
-  font: 600 12px/1.35 system-ui, -apple-system, Segoe UI, sans-serif;
-  border-radius: 10px;
-  padding: 9px 12px;
-  box-shadow: 0 8px 22px rgba(0,0,0,0.25);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 160ms ease, transform 160ms ease;
-}
-#${DECISION_FLOAT_ID}.show {
-  opacity: 0.98;
-  transform: translateY(0);
-}
-`;
-  document.head.appendChild(style);
-}
-
-function showDecisionOverlay(decision, detail, fragmentHash) {
-  if (!document.body) return;
-  ensureDecisionStyle();
-  let el = document.getElementById(DECISION_FLOAT_ID);
-  if (!el) {
-    el = document.createElement("div");
-    el.id = DECISION_FLOAT_ID;
-    document.body.appendChild(el);
-  }
-  const isStop = decision === "STOP";
-  el.style.background = isStop ? "rgba(185, 28, 28, 0.96)" : "rgba(22, 163, 74, 0.96)";
-  el.textContent = `${decision}${detail ? ` | ${detail}` : ""}${fragmentHash ? ` | #${fragmentHash.slice(0, 8)}` : ""}`;
-  el.classList.add("show");
-  if (decisionFadeTimer) clearTimeout(decisionFadeTimer);
-  decisionFadeTimer = setTimeout(() => {
-    const cur = document.getElementById(DECISION_FLOAT_ID);
-    if (cur) cur.classList.remove("show");
-  }, 6000);
-}
-
-function ensureTurnKey(node) {
-  if (!(node instanceof HTMLElement)) return "";
-  if (node.dataset.tuffTurnKey) return node.dataset.tuffTurnKey;
-  const key = `turn_${crypto.randomUUID()}`;
-  node.dataset.tuffTurnKey = key;
-  return key;
-}
-
-function rememberFragmentHash(fragmentHash, node) {
-  if (!fragmentHash || !(node instanceof HTMLElement)) return;
-  const key = ensureTurnKey(node);
-  if (!key) return;
-  hashToTurnKey.set(fragmentHash, key);
-  sentHashOrder.push(fragmentHash);
-  if (sentHashOrder.length > 100) {
-    const old = sentHashOrder.shift();
-    if (old) hashToTurnKey.delete(old);
-  }
-}
-
-function findTurnByHash(fragmentHash) {
-  if (!fragmentHash) return null;
-  const key = hashToTurnKey.get(fragmentHash);
-  if (!key) return null;
-  return document.querySelector(`[data-tuff-turn-key="${key}"]`);
-}
-
-function applyDecisionChip(node, decision) {
-  if (!(node instanceof HTMLElement)) return;
-  let tsBadge = node.querySelector(":scope > .gpt-booster-inline-ts-assistant");
-  if (!tsBadge) {
-    upsertVisibleTimestamp(node, "assistant");
-    tsBadge = node.querySelector(":scope > .gpt-booster-inline-ts-assistant");
-  }
-  if (!tsBadge) return;
-  let chip = tsBadge.querySelector(":scope > .tuff-decision-chip");
-  if (!chip) {
-    chip = document.createElement("span");
-    chip.className = "tuff-decision-chip";
-    chip.style.marginLeft = "6px";
-    chip.style.padding = "1px 5px";
-    chip.style.borderRadius = "999px";
-    chip.style.fontSize = "10px";
-    chip.style.fontWeight = "700";
-    chip.style.letterSpacing = "0.01em";
-    tsBadge.appendChild(chip);
-  }
-  if (decision === "STOP") {
-    chip.textContent = "STOP";
-    chip.style.background = "rgba(185, 28, 28, 0.16)";
-    chip.style.color = "#991b1b";
-    chip.style.border = "1px solid rgba(185, 28, 28, 0.35)";
-  } else {
-    chip.textContent = "CONTINUE";
-    chip.style.background = "rgba(22, 163, 74, 0.16)";
-    chip.style.color = "#166534";
-    chip.style.border = "1px solid rgba(22, 163, 74, 0.35)";
-  }
-}
-
-function applyDecisionToTurn(decision, fragmentHash, detail) {
-  let node = findTurnByHash(fragmentHash);
-  if (!(node instanceof HTMLElement)) {
-    node = getLatestAssistant();
-  }
-  if (!(node instanceof HTMLElement)) {
-    showDecisionOverlay(decision, detail, fragmentHash);
-    return;
-  }
-  ensureTurnKey(node);
-  const already = node.dataset.tuffDecisionApplied || "";
-  if (already === decision) return;
-  showDecisionOverlay(decision, detail, fragmentHash);
-  node.dataset.tuffDecisionApplied = decision;
-  if (fragmentHash) node.dataset.tuffDecisionHash = fragmentHash;
-  if (decision === "STOP") {
-    node.style.opacity = "0.5";
-    node.style.transition = "opacity 140ms ease";
-    disableClamp();
-  } else {
-    node.style.opacity = "";
-  }
-  applyDecisionChip(node, decision);
 }
 
 function loadAddonSettings() {
@@ -590,9 +414,6 @@ function clearSelectorWarning() {
 }
 
 function buildStreamFragmentPayload(fragment) {
-  const eventTs = nowRfc3339();
-  const origin = isChatGptPage() ? "chatgpt" : isGeminiPage() ? "gemini" : "unknown";
-  const fragmentHash = hashText(fragment || "");
   return {
     type: "StreamFragment",
     id: crypto.randomUUID(),
@@ -603,10 +424,8 @@ function buildStreamFragmentPayload(fragment) {
       url: window.location.href,
       selector: selectorFor("assistant"),
       fragment,
-      event_ts: eventTs,
+      event_ts: nowRfc3339(),
       role: "assistant",
-      origin,
-      fragment_hash: fragmentHash,
       context: {
         page_title: document.title || "",
         locale: navigator.language || ""
@@ -623,11 +442,6 @@ function sendStreamFragment(fragment) {
   }
   try {
     debugLogFragment("send", fragment);
-    const hash = hashText(fragment);
-    const turnNode = getLatestAssistant();
-    if (turnNode instanceof HTMLElement) {
-      rememberFragmentHash(hash, turnNode);
-    }
     const msg = buildStreamFragmentPayload(fragment);
     ws.send(JSON.stringify(msg));
     if (DEBUG) console.log("[TUFF] Sent to server!");
@@ -639,24 +453,16 @@ function sendStreamFragment(fragment) {
 }
 
 function scheduleSend(fragment) {
-  if (isAddonPaused()) return;
-  if (!fragment || fragment.length < 4) return;
-  const nextHash = hashText(fragment);
-  if (fragment === lastSentText || nextHash === lastSentHash) return;
-  if (isChatGptPage()) {
-    const elapsed = Date.now() - lastAssistantChange;
-    if (elapsed < CHATGPT_STABLE_HOLD_MS) return;
-  }
+  if (fragment === lastSentText || fragment.length < 4) return;
   if (sendTimer) clearTimeout(sendTimer);
   sendTimer = setTimeout(() => {
     sendTimer = null;
-    if (DEBUG || DEV_MODE) {
+    if (DEBUG) {
       const snippet = fragment.length > 10 ? `${fragment.slice(0, 10)}...` : fragment;
       console.log("[TUFF][send]", snippet);
     }
     sendStreamFragment(fragment);
     lastSentText = fragment;
-    lastSentHash = nextHash;
   }, SEND_DELAY);
 }
 
@@ -676,11 +482,6 @@ function flushPendingFragments() {
   queue.forEach((fragment) => {
     try {
       debugLogFragment("send", fragment);
-      const hash = hashText(fragment);
-      const turnNode = getLatestAssistant();
-      if (turnNode instanceof HTMLElement) {
-        rememberFragmentHash(hash, turnNode);
-      }
       const msg = buildStreamFragmentPayload(fragment);
       ws.send(JSON.stringify(msg));
       if (DEBUG) console.log("[TUFF] Sent to server!");
@@ -691,7 +492,6 @@ function flushPendingFragments() {
 }
 
 function sendManualOverride() {
-  if (isAddonPaused()) return;
   if (!wsReady || !ws || ws.readyState !== WebSocket.OPEN) return;
   const msg = {
     type: "ControlCommand",
@@ -760,14 +560,12 @@ function hasStreamingCursor(root) {
   );
 }
 
-function pickLatestWithText(nodes, hintedRole = null) {
+function pickLatestWithText(nodes) {
   const list = Array.from(nodes || []);
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const node = list[i];
     if (!(node instanceof HTMLElement)) continue;
-    const role = normalizeRole(detectRole(node) || hintedRole);
     const text = extractNodeText(node);
-    if (isGeminiUiOnlyControlNode(node, role, text)) continue;
     if (text.length > 0) return node;
   }
   return null;
@@ -775,28 +573,15 @@ function pickLatestWithText(nodes, hintedRole = null) {
 
 function getLatestGeminiAssistant() {
   const nodes = document.querySelectorAll(selectorFor("assistant"));
-  return pickLatestWithText(nodes, "assistant");
-}
-
-function getLatestChatGptAssistant() {
-  const profile = window.__TUFF_SELECTOR_PROFILE__;
-  if (profile && typeof profile.pickLatestCompleteAssistantBlock === "function") {
-    const picked = profile.pickLatestCompleteAssistantBlock(document);
-    if (picked instanceof HTMLElement) return picked;
-  }
-  const nodes = document.querySelectorAll(selectorFor("assistant"));
-  return pickLatestWithText(nodes, "assistant");
+  return pickLatestWithText(nodes);
 }
 
 function getLatestAssistant() {
-  if (isChatGptPage()) {
-    return getLatestChatGptAssistant() || document.querySelector(selectorFor("rootFallback"));
-  }
   if (isGeminiPage()) {
     return getLatestGeminiAssistant() || document.querySelector(selectorFor("rootFallback"));
   }
   const assistants = document.querySelectorAll(selectorFor("assistant"));
-  const picked = pickLatestWithText(assistants, "assistant");
+  const picked = pickLatestWithText(assistants);
   if (picked) return picked;
   const fallbackNodes = document.querySelectorAll(selectorFor("rootFallback"));
   return pickLatestWithText(fallbackNodes) || fallbackNodes[fallbackNodes.length - 1] || null;
@@ -807,17 +592,37 @@ function ensureTimestampStyle() {
   const style = document.createElement("style");
   style.id = TIMESTAMP_STYLE_ID;
   style.textContent = `
-    .gpt-booster-inline-ts {
-      display: block !important;
-      font-size: 12px !important;
-      line-height: 1.4 !important;
-      margin: 0 0 6px 0 !important;
+    .gpt-booster-ts {
+      display: inline-block !important;
+      position: relative !important;
+      z-index: 2147483000 !important;
+      align-self: flex-start !important;
+      flex: 0 0 auto !important;
+      width: auto !important;
+      height: auto !important;
+      font-size: 11px !important;
+      line-height: 1.35 !important;
+      opacity: 1 !important;
+      margin: 0 0 8px 0 !important;
+      padding: 2px 6px !important;
+      border-radius: 6px !important;
+      letter-spacing: 0.01em !important;
       user-select: text !important;
-      white-space: pre-wrap !important;
-      word-break: break-word !important;
+      pointer-events: auto !important;
+      max-width: 100% !important;
+      white-space: nowrap !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
     }
-    .gpt-booster-inline-ts-assistant {
-      color: #335272 !important;
+    .gpt-booster-ts-user {
+      color: #0b3d2e !important;
+      background: rgba(181, 255, 215, 0.65) !important;
+      border: 1px solid rgba(11, 61, 46, 0.25) !important;
+    }
+    .gpt-booster-ts-assistant {
+      color: #0c2948 !important;
+      background: rgba(196, 229, 255, 0.65) !important;
+      border: 1px solid rgba(12, 41, 72, 0.25) !important;
     }
   `;
   document.head.appendChild(style);
@@ -825,24 +630,6 @@ function ensureTimestampStyle() {
 
 function formatLocalTimestamp(ms) {
   const parts = new Intl.DateTimeFormat("ja-JP", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).formatToParts(new Date(ms));
-  const map = Object.create(null);
-  parts.forEach((p) => {
-    map[p.type] = p.value;
-  });
-  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
-}
-
-function formatJstTimestamp(ms) {
-  const parts = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -889,165 +676,15 @@ function getStorageKey(stableId) {
   return `${STORAGE_PREFIX}:${scope}:${stableId}`;
 }
 
-function collectNodeText(root, maxLen = 0) {
-  if (!root) return "";
-  try {
-    const walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode(node) {
-          const parent = node && node.parentElement;
-          if (!parent) return NodeFilter.FILTER_REJECT;
-          const tag = parent.tagName ? parent.tagName.toLowerCase() : "";
-          if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template") {
-            return NodeFilter.FILTER_REJECT;
-          }
-          if (parent.closest(".gpt-booster-ts, .gpt-booster-inline-ts")) {
-            return NodeFilter.FILTER_REJECT;
-          }
-          const text = (node.nodeValue || "").replace(/\s+/g, " ").trim();
-          if (!text) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      },
-      false
-    );
-
-    const parts = [];
-    let total = 0;
-    while (true) {
-      const current = walker.nextNode();
-      if (!current) break;
-      let chunk = (current.nodeValue || "").replace(/\s+/g, " ").trim();
-      if (!chunk) continue;
-      if (maxLen > 0 && total + chunk.length > maxLen) {
-        const room = maxLen - total;
-        if (room <= 0) break;
-        chunk = chunk.slice(0, room);
-      }
-      parts.push(chunk);
-      total += chunk.length;
-      if (maxLen > 0 && total >= maxLen) break;
-    }
-    return parts.join(" ").replace(/\s+/g, " ").trim();
-  } catch (_) {
-    return String(root.textContent || "").replace(/\s+/g, " ").trim();
-  }
-}
-
 function getNodeTextFingerprint(node) {
   // Ignore booster timestamp marker itself to keep fingerprints stable.
-  const text = collectNodeText(node, 1800);
+  const cloned = node.cloneNode(true);
+  if (cloned instanceof HTMLElement) {
+    cloned.querySelectorAll(".gpt-booster-ts").forEach((el) => el.remove());
+  }
+  const text = (cloned.textContent || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
-  return text;
-}
-
-function isComposerEditable(node) {
-  if (!(node instanceof HTMLElement)) return false;
-  const tag = node.tagName.toLowerCase();
-  return tag === "textarea" || tag === "input" || node.isContentEditable || node.matches('[role="textbox"]');
-}
-
-function findEditableInScope(root) {
-  if (!(root instanceof HTMLElement)) return null;
-  return root.querySelector('textarea, input, [role="textbox"], [contenteditable="true"]');
-}
-
-function resolveComposerFromTarget(target) {
-  if (!(target instanceof HTMLElement)) return null;
-  if (isComposerEditable(target)) return target;
-  const closestEditable = target.closest('textarea, input, [role="textbox"], [contenteditable="true"]');
-  if (closestEditable instanceof HTMLElement) return closestEditable;
-  const form = target.closest("form");
-  if (form instanceof HTMLElement) {
-    const inForm = findEditableInScope(form);
-    if (inForm instanceof HTMLElement) return inForm;
-  }
-  return findEditableInScope(document.body);
-}
-
-function appendUserTimestampLiteral(editable) {
-  if (isAddonPaused()) return false;
-  if (!isComposerEditable(editable)) return false;
-  const now = Date.now();
-  const prev = userTsInjectedAt.get(editable) || 0;
-  if (now - prev < USER_TS_COOLDOWN_MS) return false;
-
-  const stamp = `[${USER_TS_LITERAL_PREFIX}:${formatJstTimestamp(now)}(JST)]`;
-  const tsTailPattern = /\[(?:USER|USER_TS):[^\]]+\]\s*$/;
-  let changed = false;
-  const tag = editable.tagName.toLowerCase();
-  if (tag === "textarea" || tag === "input") {
-    const current = String(editable.value || "");
-    if (!tsTailPattern.test(current)) {
-      editable.value = current ? `${current}\n${stamp}` : stamp;
-      editable.dispatchEvent(new Event("input", { bubbles: true }));
-      changed = true;
-    }
-  } else {
-    const current = String(editable.innerText || editable.textContent || "");
-    if (!tsTailPattern.test(current)) {
-      const next = current ? `${current}\n${stamp}` : stamp;
-      editable.textContent = next;
-      editable.dispatchEvent(new Event("input", { bubbles: true }));
-      changed = true;
-    }
-  }
-  if (changed) userTsInjectedAt.set(editable, now);
-  return changed;
-}
-
-function isSendLikeButton(button) {
-  if (!(button instanceof HTMLElement)) return false;
-  const type = (button.getAttribute("type") || "").toLowerCase();
-  if (type === "submit") return true;
-  const label = [
-    button.getAttribute("aria-label"),
-    button.getAttribute("data-testid"),
-    button.getAttribute("title"),
-    button.textContent
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return /send|submit|送信|送る|paperplane|submit/.test(label);
-}
-
-function bindUserTimestampOnSend() {
-  document.addEventListener(
-    "keydown",
-    (ev) => {
-      if (!(ev.target instanceof HTMLElement)) return;
-      if (ev.key !== "Enter" || ev.shiftKey || ev.altKey || ev.ctrlKey || ev.metaKey || ev.isComposing) return;
-      const editable = resolveComposerFromTarget(ev.target);
-      if (editable) appendUserTimestampLiteral(editable);
-    },
-    true
-  );
-
-  document.addEventListener(
-    "submit",
-    (ev) => {
-      const form = ev.target instanceof HTMLElement ? ev.target : null;
-      const editable = form ? resolveComposerFromTarget(form) : resolveComposerFromTarget(document.activeElement);
-      if (editable) appendUserTimestampLiteral(editable);
-    },
-    true
-  );
-
-  document.addEventListener(
-    "click",
-    (ev) => {
-      const target = ev.target instanceof HTMLElement ? ev.target : null;
-      if (!target) return;
-      const button = target.closest("button, [role='button']");
-      if (!(button instanceof HTMLElement) || !isSendLikeButton(button)) return;
-      const editable = resolveComposerFromTarget(button) || resolveComposerFromTarget(document.activeElement);
-      if (editable) appendUserTimestampLiteral(editable);
-    },
-    true
-  );
+  return text.slice(0, 1800);
 }
 
 function hashText(text) {
@@ -1090,28 +727,11 @@ function readTimestampForNode(node, role) {
 
 function canonicalTurnNode(node) {
   if (!(node instanceof HTMLElement)) return null;
-  if (isChatGptPage()) {
-    const chatTurn = node.closest(
-      'article[data-testid*="conversation-turn"], [data-message-author-role], article[data-message-id]'
-    );
-    if (chatTurn instanceof HTMLElement) return chatTurn;
-  }
   const roleRoot = node.closest('[data-message-author-role]');
   if (roleRoot instanceof HTMLElement) return roleRoot;
   const article = node.closest("article");
   if (article instanceof HTMLElement) return article;
   return node;
-}
-
-function isLikelyChatTurnRoot(node) {
-  if (!(node instanceof HTMLElement)) return false;
-  if (!isChatGptPage()) return true;
-  if (node.closest("header, nav")) return false;
-  const testId = (node.getAttribute("data-testid") || "").toLowerCase();
-  if (/conversation-turn|assistant|user|message/.test(testId)) return true;
-  if (node.hasAttribute("data-message-author-role") || node.querySelector("[data-message-author-role]")) return true;
-  if (!node.closest("main")) return false;
-  return extractNodeText(node).length >= 8;
 }
 
 function isComposerLikeNode(node) {
@@ -1133,30 +753,6 @@ function isComposerLikeNode(node) {
   return false;
 }
 
-function normalizedTurnText(text) {
-  return String(text || "")
-    .replace(/\[(?:USER|USER_TS|AI|[A-Za-z]+_TS):[^\]]+\]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isGeminiUiOnlyControlNode(node, role, text) {
-  if (!isGeminiPage()) return false;
-  if (normalizeRole(role) !== "assistant") return false;
-  const normalized = normalizedTurnText(text);
-  if (!normalized) return true;
-  if (/^(思考プロセスを表示|思考プロセス|show thinking process|thinking process)$/i.test(normalized)) return true;
-  const hasButton = Boolean(node.querySelector("button, [role='button']"));
-  if (
-    hasButton &&
-    normalized.length <= 32 &&
-    /(thinking|思考|share|共有|copy|コピー|edit|編集|retry|再試行)/i.test(normalized)
-  ) {
-    return true;
-  }
-  return false;
-}
-
 function cleanupNodeBadges(node) {
   if (!(node instanceof HTMLElement)) return;
   // Remove legacy nested badges that were attached to descendants.
@@ -1171,62 +767,16 @@ function cleanupNodeBadges(node) {
   }
 }
 
-function normalizeRole(role) {
-  if (!role) return null;
-  const normalized = String(role).toLowerCase();
-  if (normalized === "model") return "assistant";
-  if (normalized === "ai") return "assistant";
-  if (normalized === "human") return "user";
-  return normalized;
-}
-
-function removeDuplicateBadgesByKey(node, badgeKey) {
-  if (!badgeKey) return;
-  document.querySelectorAll(".gpt-booster-ts").forEach((el) => {
-    if (!(el instanceof HTMLElement)) return;
-    if (el.getAttribute("data-booster-key") !== badgeKey) return;
-    if (el.parentElement === node) return;
-    el.remove();
-  });
-}
-
-function removeOtherAssistantBadges(activeNode) {
-  document.querySelectorAll(".gpt-booster-ts-assistant").forEach((el) => {
-    if (!(el instanceof HTMLElement)) return;
-    if (el.parentElement === activeNode) return;
-    el.remove();
-  });
-}
-
-function removeOtherUserBadges(activeNode) {
-  document.querySelectorAll(".gpt-booster-ts-user").forEach((el) => {
-    if (!(el instanceof HTMLElement)) return;
-    if (el.parentElement === activeNode) return;
-    el.remove();
-  });
-}
-
-function llmLabelFromUrl() {
-  const host = (location.hostname || "").toLowerCase();
-  if (host.includes("gemini.google.com")) return "Gemini";
-  if (host.includes("chatgpt.com") || host.includes("chat.openai.com") || host.includes("openai.com")) return "GPT";
-  return "AI";
-}
-
 function resetTimestampBadges() {
   document.querySelectorAll(".gpt-booster-ts").forEach((el) => el.remove());
 }
 
 function upsertVisibleTimestamp(node, role, options = {}) {
   if (!(node instanceof HTMLElement)) return;
-  const normalizedRole = normalizeRole(role);
-  if (normalizedRole !== "user" && normalizedRole !== "assistant") return;
   cleanupNodeBadges(node);
-  const markAssistantDone = Boolean(options.markAssistantDone) && normalizedRole === "assistant";
-  const storageKey = getNodeStorageBaseKey(node, normalizedRole);
+  const markAssistantDone = Boolean(options.markAssistantDone) && role === "assistant";
+  const storageKey = getNodeStorageBaseKey(node, role);
   const endStorageKey = storageKey ? `${storageKey}:end` : null;
-  const badgeKey = storageKey || getFallbackStorageKey(node, normalizedRole);
-  removeDuplicateBadgesByKey(node, badgeKey);
   let ts;
   let endTs;
 
@@ -1287,24 +837,22 @@ function upsertVisibleTimestamp(node, role, options = {}) {
     node.setAttribute("data-gpt-booster-ts", String(ts));
   }
 
-  if (normalizedRole === "assistant") {
-    let inline = node.querySelector(":scope > .gpt-booster-inline-ts-assistant");
-    if (!inline) {
-      inline = document.createElement("div");
-      inline.className = "gpt-booster-inline-ts gpt-booster-inline-ts-assistant";
-      node.prepend(inline);
-    }
-    if (badgeKey) inline.setAttribute("data-booster-key", badgeKey);
-    inline.textContent = `[AI:${formatJstTimestamp(ts)}(JST)]`;
+  let badge = node.querySelector(":scope > .gpt-booster-ts");
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.className = "gpt-booster-ts";
+    badge.setAttribute("aria-hidden", "true");
+    node.prepend(badge);
   }
-
-  if (!SHOW_ALL_TURN_TIMESTAMPS) {
-    if (normalizedRole === "assistant") {
-      removeOtherAssistantBadges(node);
-    } else if (normalizedRole === "user") {
-      removeOtherUserBadges(node);
-    }
-  }
+  const roleLabel = role === "user" ? "USER" : "AI";
+  badge.className = `gpt-booster-ts gpt-booster-ts-${role}`;
+  const tz = getLocalTimeZoneLabel();
+  const label =
+    role === "assistant" && Number.isFinite(endTs) && endTs > ts
+      ? `${roleLabel}: ${formatLocalTimestamp(ts)} -> ${formatLocalTimestamp(endTs)} ${tz}`
+      : `${roleLabel}: ${formatLocalTimestamp(ts)} ${tz}`;
+  badge.setAttribute("data-label", label);
+  badge.textContent = label;
 }
 
 function detectRole(node) {
@@ -1346,7 +894,6 @@ function detectRole(node) {
 }
 
 function annotateTurns() {
-  if (isAddonPaused()) return;
   const candidates = [];
   if (!isGeminiPage()) {
     const turns = document.querySelectorAll(selectorFor("turns"));
@@ -1358,42 +905,27 @@ function annotateTurns() {
   assistants.forEach((n) => candidates.push({ node: n, hintedRole: "assistant" }));
 
   const seen = new Set();
-  let latestUserRoot = null;
   candidates.forEach(({ node, hintedRole }) => {
     const root = canonicalTurnNode(node);
     if (!(root instanceof HTMLElement)) return;
-    if (!isLikelyChatTurnRoot(root)) return;
     if (isComposerLikeNode(root)) return;
     if (seen.has(root)) return;
     seen.add(root);
-    const role = normalizeRole(detectRole(root) || hintedRole);
-    if (role !== "user" && role !== "assistant") return;
-    const rootText = extractNodeText(root);
-    if (rootText.length < 2) return;
-    if (isGeminiUiOnlyControlNode(root, role, rootText)) return;
+    const role = detectRole(root) || hintedRole;
+    if (!role) return;
+    if (extractNodeText(root).length < 2) return;
 
     if (role === "user") {
-      // Keep timestamp data for every user turn so copied logs have full pairs.
       upsertVisibleTimestamp(root, "user");
-      latestUserRoot = root;
       return;
     }
     if (role === "assistant") {
       upsertVisibleTimestamp(root, "assistant");
     }
   });
-
-  if (!SHOW_ALL_TURN_TIMESTAMPS) {
-    if (latestUserRoot) {
-      removeOtherUserBadges(latestUserRoot);
-    } else {
-      removeOtherUserBadges(null);
-    }
-  }
 }
 
 function collectConversationLogWithTimestamps() {
-  if (isAddonPaused()) return "";
   const nodes = Array.from(document.querySelectorAll(selectorFor("turns")));
   const seen = new Set();
   const lines = [];
@@ -1402,13 +934,12 @@ function collectConversationLogWithTimestamps() {
     if (!(root instanceof HTMLElement)) return;
     if (seen.has(root)) return;
     seen.add(root);
-    const role = normalizeRole(detectRole(root));
-    if (role !== "user" && role !== "assistant") return;
+    const role = detectRole(root);
+    if (!role) return;
     const text = extractNodeText(root);
     if (!text) return;
-    if (isGeminiUiOnlyControlNode(root, role, text)) return;
     const ts = readTimestampForNode(root, role) || Date.now();
-    const roleLabel = role === "user" ? "USER" : llmLabelFromUrl();
+    const roleLabel = role === "user" ? "USER" : "AI";
     lines.push(`[${formatLocalTimestamp(ts)}] [${roleLabel}] ${text}`);
   });
   return lines.join("\n\n");
@@ -1431,45 +962,26 @@ function bindTimestampCopyHotkey() {
 }
 
 function annotateRecentTurns(limit = 8) {
-  if (isAddonPaused()) return;
   const seen = new Set();
-  let latestUserRoot = null;
   const addRecent = (selector, hintedRole) => {
     const list = Array.from(document.querySelectorAll(selector));
     const recent = list.slice(-Math.max(1, limit));
     recent.forEach((node) => {
       const root = canonicalTurnNode(node);
       if (!(root instanceof HTMLElement)) return;
-      if (!isLikelyChatTurnRoot(root)) return;
       if (isComposerLikeNode(root)) return;
       if (seen.has(root)) return;
       seen.add(root);
-      const role = normalizeRole(detectRole(root) || hintedRole);
-      if (role !== "user" && role !== "assistant") return;
-      const rootText = extractNodeText(root);
-      if (rootText.length < 2) return;
-      if (isGeminiUiOnlyControlNode(root, role, rootText)) return;
-      if (role === "user") {
-        upsertVisibleTimestamp(root, "user");
-        latestUserRoot = root;
-        return;
-      }
-      if (role === "assistant") {
-        upsertVisibleTimestamp(root, "assistant");
-      }
+      const role = detectRole(root) || hintedRole;
+      if (!role) return;
+      if (extractNodeText(root).length < 2) return;
+      upsertVisibleTimestamp(root, role === "user" ? "user" : "assistant");
     });
   };
 
   if (!isGeminiPage()) addRecent(selectorFor("turns"), null);
   addRecent(selectorFor("user"), "user");
   addRecent(selectorFor("assistant"), "assistant");
-  if (!SHOW_ALL_TURN_TIMESTAMPS) {
-    if (latestUserRoot) {
-      removeOtherUserBadges(latestUserRoot);
-    } else {
-      removeOtherUserBadges(null);
-    }
-  }
 }
 
 function pruneTimestampBadges(maxBadges = 80) {
@@ -1518,7 +1030,6 @@ function scheduleFinalizeCheck() {
 }
 
 function handleMutations() {
-  if (isAddonPaused()) return;
   applyAiOrigin();
   refreshResponseSafeMode();
   if (mutationDebounceTimer) {
@@ -1574,12 +1085,7 @@ function handleMutations() {
 
   if (isStable) {
     upsertVisibleTimestamp(latest, "assistant", { markAssistantDone: true });
-    const decisionApplied = latest.dataset && latest.dataset.tuffDecisionApplied;
-    if (isChatGptPage() && decisionApplied === "STOP") {
-      disableClamp();
-    } else {
-      enableClamp();
-    }
+    enableClamp();
   } else {
     scheduleFinalizeCheck();
   }
@@ -1592,7 +1098,8 @@ function scheduleMutationHandling() {
 
 function extractNodeText(node) {
   if (!node) return "";
-  return collectNodeText(node);
+  const text = (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+  return text;
 }
 
 function clampScroll() {
@@ -1637,33 +1144,25 @@ function start() {
   if (!document.body) return;
   refreshResponseSafeMode();
   loadAddonSettings().finally(() => {
-    if (!isAddonPaused()) wsConnect();
+    wsConnect();
   });
   bindTimestampCopyHotkey();
-  bindUserTimestampOnSend();
 
   // ChatGPTは描画負荷が高いため、Observerは使わず軽量ポーリングで処理する。
   if (isChatGptPage()) {
     ensureTimestampStyle();
-    annotateRecentTurns(16);
+    annotateRecentTurns(10);
     handleMutations();
     if (chatgptLiteTimer) clearInterval(chatgptLiteTimer);
     chatgptLiteTimer = setInterval(() => {
-      if (isAddonPaused()) return;
-      chatgptTick = (chatgptTick + 1) % 6;
-      if (chatgptTick === 0) {
-        annotateRecentTurns(16);
-      }
-      pruneTimestampBadges(120);
+      annotateRecentTurns(6);
+      pruneTimestampBadges(80);
       const latest = getLatestAssistant();
       if (!latest) return;
-      const stableText = markAssistantState(latest);
-      const streaming = hasStreamingCursor(latest) || isThinking(latest);
       const latestText = extractNodeText(latest);
       if (!latestText) return;
-      if (!stableText || streaming) return;
       scheduleSend(latestText);
-    }, CHATGPT_POLL_INTERVAL_MS);
+    }, 1800);
     return;
   }
 
@@ -1675,73 +1174,8 @@ function start() {
   handleMutations();
 }
 
-function unbindLiveStateArtifacts() {
-  disableClamp();
-  deactivateStopOverlay();
-  const warn = document.getElementById(SELECTOR_WARNING_ID);
-  if (warn) warn.remove();
-}
-
-function applyPauseState(nextPaused) {
-  addonPaused = Boolean(nextPaused);
-  if (addonPaused) {
-    if (sendTimer) {
-      clearTimeout(sendTimer);
-      sendTimer = null;
-    }
-    if (wsRetryTimer) {
-      clearTimeout(wsRetryTimer);
-      wsRetryTimer = null;
-    }
-    wsReady = false;
-    if (ws) {
-      try {
-        ws.close();
-      } catch (_) {
-        // noop
-      }
-      ws = null;
-    }
-    unbindLiveStateArtifacts();
-    return;
-  }
-  if (!wsReady) wsConnect();
-  handleMutations();
-}
-
-function loadPauseState() {
-  return new Promise((resolve) => {
-    if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
-      applyPauseState(false);
-      resolve();
-      return;
-    }
-    chrome.storage.local.get([PAUSE_KEY], (res) => {
-      applyPauseState(Boolean(res && res[PAUSE_KEY]));
-      resolve();
-    });
-  });
-}
-
-function bindPauseStateSync() {
-  if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.onChanged) return;
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local") return;
-    if (!changes || !changes[PAUSE_KEY]) return;
-    applyPauseState(Boolean(changes[PAUSE_KEY].newValue));
-  });
-}
-
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => {
-    loadPauseState().finally(() => {
-      bindPauseStateSync();
-      start();
-    });
-  }, { once: true });
+  document.addEventListener("DOMContentLoaded", start, { once: true });
 } else {
-  loadPauseState().finally(() => {
-    bindPauseStateSync();
-    start();
-  });
+  start();
 }

@@ -5,7 +5,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY tuff-brg ./tuff-brg
 COPY tuff-db ./tuff-db
 
-RUN cargo build --release -p tuff_brg
+RUN cargo build --release -p tuffbrg
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
@@ -14,10 +14,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/tuff_brg /usr/local/bin/tuff_brg
+COPY --from=builder /build/target/release/tuffbrg /usr/local/bin/tuffbrg
 
 EXPOSE 8787
 VOLUME ["/app/_tuffdb"]
 
 ENV TUFF_HISTORY_OUT=history_out
-ENTRYPOINT ["/usr/local/bin/tuff_brg"]
+ENTRYPOINT ["/usr/local/bin/tuffbrg"]

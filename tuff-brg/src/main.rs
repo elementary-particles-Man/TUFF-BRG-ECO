@@ -122,6 +122,7 @@ struct AppState {
     history_html: Arc<String>,
     pending_path: PathBuf,
     meaning_path: PathBuf,
+    stream_log_path: PathBuf,
 }
 
 #[tokio::main]
@@ -133,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
     let wal_dir = PathBuf::from("_tuffdb");
     fs::create_dir_all(&wal_dir)?;
     let wal_path = wal_dir.join("tuff.wal");
+    let stream_log_path = wal_dir.join("stream_events.ndjson");
 
     let engine = TuffEngine::new(
         wal_path
@@ -191,12 +193,14 @@ async fn main() -> anyhow::Result<()> {
         history_html: Arc::new(history_html),
         pending_path,
         meaning_path,
+        stream_log_path,
     };
 
     let app = Router::new()
         .route("/", get(ws_handler))
         .route("/history", get(history_page))
         .route("/history/api/latest", get(history_latest))
+        .route("/history/api/latest_facts", get(history_latest))
         .route("/history/api/timeline", get(history_timeline))
         .route("/facts/pending", get(facts_pending))
         .with_state(state);
@@ -282,6 +286,26 @@ fn log_line(msg: &str) {
     let _ = io::stdout().flush();
 }
 
+#[derive(Debug, Clone, Default)]
+struct FragmentEnvelope {
+    fragment: String,
+    event_ts: Option<String>,
+    received_ts: String,
+    role: Option<String>,
+}
+
+fn enrich_reason_with_timestamps(base: &str, envelope: &FragmentEnvelope) -> String {
+    let mut reason = base.to_string();
+    if let Some(event_ts) = envelope.event_ts.as_ref() {
+        reason.push_str(&format!(" event_ts={event_ts}"));
+    }
+    reason.push_str(&format!(" received_ts={}", envelope.received_ts));
+    if let Some(role) = envelope.role.as_ref() {
+        reason.push_str(&format!(" role={role}"));
+    }
+    reason
+}
+
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
@@ -290,7 +314,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     log_line("WS: client connected");
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
-    let (frag_tx, mut frag_rx) = watch::channel(String::new());
+    let (frag_tx, mut frag_rx) = watch::channel(FragmentEnvelope::default());
 
     // outbound pump
     let tx_task = tokio::spawn(async move {
@@ -306,11 +330,20 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let tx_for_worker = tx.clone();
     let ingest_task = tokio::spawn(async move {
         while frag_rx.changed().await.is_ok() {
-            let fragment = frag_rx.borrow().clone();
+            let envelope = frag_rx.borrow().clone();
+            let fragment = envelope.fragment.clone();
             if fragment.is_empty() {
                 continue;
             }
-            log_line("INGEST: start");
+            log_line(&format!(
+                "INGEST: start event_ts={} received_ts={} role={}",
+                envelope
+                    .event_ts
+                    .as_deref()
+                    .unwrap_or("-"),
+                envelope.received_ts,
+                envelope.role.as_deref().unwrap_or("-")
+            ));
 
             if let Some(lightweight) = state_for_worker.lightweight_verifier.as_ref() {
                 let lw = lightweight.read().await;
@@ -326,7 +359,10 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                                 ts: Utc::now().to_rfc3339(),
                                 payload: JudgeResultPayload {
                                     status: ProtoStatus::White,
-                                    reason: format!("source=Cache tag={} mode={}", hit.tag, mode),
+                                    reason: enrich_reason_with_timestamps(
+                                        &format!("source=Cache tag={} mode={}", hit.tag, mode),
+                                        &envelope,
+                                    ),
                                     confidence: 1.0,
                                     claim: fragment.clone(),
                                     evidence_count: 0,
@@ -344,14 +380,17 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         let judge = Message::JudgeResult {
                             id: Id::new().to_string(),
                             ts: Utc::now().to_rfc3339(),
-                            payload: JudgeResultPayload {
-                                status: ProtoStatus::Smoke,
-                                reason: "source=Cache mismatch".to_string(),
-                                confidence: 0.0,
-                                claim: fragment.clone(),
-                                evidence_count: 0,
-                                abstract_id: None,
-                            },
+                                payload: JudgeResultPayload {
+                                    status: ProtoStatus::Smoke,
+                                    reason: enrich_reason_with_timestamps(
+                                        "source=Cache mismatch",
+                                        &envelope,
+                                    ),
+                                    confidence: 0.0,
+                                    claim: fragment.clone(),
+                                    evidence_count: 0,
+                                    abstract_id: None,
+                                },
                         };
                         let _ = tx_for_worker
                             .send(WsMessage::Text(serde_json::to_string(&judge).unwrap_or_default()))
@@ -404,12 +443,15 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 status = outcome.status;
                 confidence = outcome.confidence;
                 evidence_count = outcome.evidence_count;
-                reason = format!("source=LLM {}", outcome.reason);
+                reason = enrich_reason_with_timestamps(
+                    &format!("source=LLM {}", outcome.reason),
+                    &envelope,
+                );
                 if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
                     abstract_id = Some(abstract_.id.to_string());
                 }
             } else {
-                reason = "source=LLM ok".to_string();
+                reason = enrich_reason_with_timestamps("source=LLM ok", &envelope);
             }
 
             let judge = Message::JudgeResult {
@@ -523,8 +565,27 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
         if let Message::StreamFragment { payload, .. } = parsed {
             log_line("WS: StreamFragment received");
-            let StreamFragmentPayload { fragment, .. } = payload;
-            let _ = frag_tx.send(fragment);
+            let StreamFragmentPayload {
+                fragment,
+                event_ts,
+                role,
+                url,
+                ..
+            } = payload;
+            let _ = append_stream_event(
+                &state.stream_log_path,
+                &fragment,
+                event_ts.as_deref(),
+                role.as_deref(),
+                &url,
+            )
+            .await;
+            let _ = frag_tx.send(FragmentEnvelope {
+                fragment,
+                event_ts,
+                received_ts: Utc::now().to_rfc3339(),
+                role,
+            });
         }
     }
 
@@ -551,6 +612,7 @@ async fn history_latest(State(state): State<AppState>) -> Response {
 async fn history_timeline(State(state): State<AppState>) -> Response {
     let mut value = read_json_or_default(&state.history_dir.join("timeline.json"), json!([]));
     merge_lightweight_timeline(&mut value, &lightweight_wal_path());
+    merge_stream_timeline(&mut value, &state.stream_log_path);
     (StatusCode::OK, value.to_string()).into_response()
 }
 
@@ -574,6 +636,7 @@ fn read_json_or_default(path: &Path, default_value: Value) -> Value {
 struct LightweightWalRecord {
     tag: String,
     meaning: String,
+    recorded_at: Option<String>,
 }
 
 fn lightweight_wal_path() -> PathBuf {
@@ -589,16 +652,29 @@ fn load_lightweight_records(path: &Path) -> Vec<LightweightWalRecord> {
     };
     text.lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '\t');
-            let tag = parts.next()?.trim();
-            let meaning = parts.next()?.trim();
-            let _sha = parts.next()?.trim();
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            let tag = parts[0].trim();
+            let meaning = parts[1].trim();
+            let recorded_at = if parts.len() >= 4 {
+                let ts = parts[2].trim();
+                if ts.is_empty() {
+                    None
+                } else {
+                    Some(ts.to_string())
+                }
+            } else {
+                None
+            };
             if tag.is_empty() || meaning.is_empty() {
                 return None;
             }
             Some(LightweightWalRecord {
                 tag: tag.to_string(),
                 meaning: meaning.to_string(),
+                recorded_at,
             })
         })
         .collect()
@@ -616,6 +692,10 @@ fn merge_lightweight_latest(root: &mut Value, wal_path: &Path) {
     let Some(facts) = facts else { return };
 
     for (idx, rec) in records.into_iter().enumerate() {
+        let last_event_ts = rec
+            .recorded_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
         facts.push(json!({
             "topic_id": format!("lw:{}", rec.tag),
             "subject": "LIGHTWEIGHT",
@@ -625,7 +705,7 @@ fn merge_lightweight_latest(root: &mut Value, wal_path: &Path) {
             "confidence_kind": "FAST_PATH",
             "agent_origin": "LIGHTWEIGHT_DB",
             "source_op_id": format!("lw_{idx:08}"),
-            "last_event_ts": Utc::now().to_rfc3339(),
+            "last_event_ts": last_event_ts,
             "is_human_overridden": false
         }));
     }
@@ -640,16 +720,96 @@ fn merge_lightweight_timeline(root: &mut Value, wal_path: &Path) {
     let Some(timelines) = timelines else { return };
 
     for (idx, rec) in records.into_iter().enumerate() {
+        let ts = rec
+            .recorded_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
         timelines.push(json!({
             "topic_id": format!("lw:{}", rec.tag),
             "events": [{
                 "op_id": format!("lw_{idx:08}"),
-                "timestamp": Utc::now().to_rfc3339(),
+                "timestamp": ts,
                 "type": "INGEST",
                 "agent_origin": "LIGHTWEIGHT_DB",
                 "status_after": "VERIFIED",
                 "reason": rec.meaning
             }]
+        }));
+    }
+}
+
+async fn append_stream_event(
+    path: &Path,
+    fragment: &str,
+    event_ts: Option<&str>,
+    role: Option<&str>,
+    url: &str,
+) -> anyhow::Result<()> {
+    if fragment.trim().is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let line = json!({
+        "ts": Utc::now().to_rfc3339(),
+        "event_ts": event_ts.unwrap_or(""),
+        "role": role.unwrap_or("assistant"),
+        "url": url,
+        "fragment": fragment,
+    })
+    .to_string()
+        + "\n";
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
+}
+
+fn merge_stream_timeline(root: &mut Value, stream_path: &Path) {
+    let text = match fs::read_to_string(stream_path) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let timelines = root.as_array_mut();
+    let Some(timelines) = timelines else { return };
+
+    let mut events = Vec::new();
+    for line in text.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let ts = v.get("ts").and_then(Value::as_str).unwrap_or("").to_string();
+        let role = v.get("role").and_then(Value::as_str).unwrap_or("assistant");
+        let url = v.get("url").and_then(Value::as_str).unwrap_or("");
+        let fragment = v
+            .get("fragment")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .replace('\n', " ")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        if ts.is_empty() || fragment.is_empty() {
+            continue;
+        }
+        events.push(json!({
+            "op_id": format!("stream_{ts}"),
+            "timestamp": ts,
+            "type": "INGEST",
+            "agent_origin": "STREAM",
+            "status_after": "VERIFIED",
+            "reason": format!("role={} url={} fragment={}", role, url, fragment)
+        }));
+    }
+
+    if !events.is_empty() {
+        timelines.push(json!({
+            "topic_id": "stream:live",
+            "events": events
         }));
     }
 }
@@ -678,8 +838,12 @@ async fn handle_approve(state: &AppState, payload: ApproveFactPayload) -> anyhow
 
         if let Some(lw) = state.lightweight_verifier.as_ref() {
             let mut guard = lw.write().await;
-            let _ = guard.insert_meaning(&state.meaning_path, &item.tag, &item.value);
-            let _ = guard.reload(&state.meaning_path);
+            if let Err(err) = guard.insert_meaning(&state.meaning_path, &item.tag, &item.value) {
+                log_line(&format!("APPROVE: insert_meaning failed: {}", err));
+            }
+            if let Err(err) = guard.reload(&state.meaning_path) {
+                log_line(&format!("APPROVE: reload meaning db failed: {}", err));
+            }
         } else {
             append_meaning_line(&state.meaning_path, &item.tag, &item.value).await?;
         }

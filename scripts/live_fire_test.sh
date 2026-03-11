@@ -25,10 +25,10 @@ japan-leader=Takaichi
 DB
 
 : >"${LOG_FILE}"
-RUST_LOG=debug cargo build -p tuff_brg >>"${LOG_FILE}" 2>&1
+RUST_LOG=debug cargo build -p tuffbrg >>"${LOG_FILE}" 2>&1
 TUFF_FAST_PATH=1 \
 TUFF_LIGHTWEIGHT_MEANING_PATH="${MEANING_FILE}" \
-RUST_LOG=debug ./target/debug/tuff_brg >>"${LOG_FILE}" 2>&1 &
+RUST_LOG=debug ./target/debug/tuffbrg >>"${LOG_FILE}" 2>&1 &
 PID=$!
 
 for _ in $(seq 1 240); do
@@ -39,7 +39,7 @@ for _ in $(seq 1 240); do
 done
 
 if ! (echo > /dev/tcp/127.0.0.1/8787) >/dev/null 2>&1; then
-  echo "ERROR: tuff_brg did not start on 127.0.0.1:8787"
+  echo "ERROR: tuffbrg did not start on 127.0.0.1:8787"
   exit 1
 fi
 

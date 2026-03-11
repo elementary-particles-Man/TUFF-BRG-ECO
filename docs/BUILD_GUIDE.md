@@ -3,7 +3,7 @@
 ## 1. Rust ビルド
 ```bash
 cd /mnt/thpdoc/Develop/TUFF-BRG-ECO
-cargo build -p tuff_brg
+cargo build -p tuffbrg
 cargo build -p transformer_neo
 ```
 
@@ -17,7 +17,7 @@ TUFF_WAL_PATH=_tuffdb/tuff.wal TUFF_HISTORY_OUT=history_out \
 ## 3. MID 起動
 ```bash
 TUFF_STOP_CONFIDENCE=0.35 \
-  cargo run -p tuff_brg
+  cargo run -p tuffbrg
 ```
 
 ## 4. ブラウザ拡張の読み込み (Chrome)
@@ -45,5 +45,5 @@ curl -i http://127.0.0.1:8787/history/api/timeline
 ```
 
 ## 7. 既知の注意点
-- `history_out/` が存在しない場合、/history/api/* は 404 を返します。
+- `history_out/` が存在しない場合でも、`/history/api/*` はデフォルトJSON（`200 OK`）を返します（空配列/空facts）。
 - 拡張機能は `localhost` 前提のため、同一マシンでの起動が前提です。

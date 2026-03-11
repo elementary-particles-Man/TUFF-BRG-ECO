@@ -31,7 +31,7 @@ ECO (Ecosystem) は、tuff-db（コア）と tuff-brg（ブリッジ）が単一
 ```bash
 # ミドルウェア(MID)の起動
 export AI_ORIGIN="Gemini" # 未指定時のデフォルトは "Gemini"
-cargo run -p tuff_brg
+cargo run -p tuffbrg
 ```
 
 ### 環境変数

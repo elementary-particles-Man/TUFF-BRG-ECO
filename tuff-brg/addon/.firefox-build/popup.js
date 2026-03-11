@@ -2,7 +2,6 @@
   const BUILD_TAG = "popup-20260210-2";
   console.info("[TUFF popup]", BUILD_TAG);
   const DEFAULT_BASE = "http://127.0.0.1:8787";
-  const PAUSE_KEY = "TUFF_ADDON_PAUSED";
   const FALLBACK_BASES = [
     "http://127.0.0.1:8787",
     "http://localhost:8787",
@@ -24,28 +23,6 @@
       chrome.storage.local.get(["TUFF_WEB_BASE"], (res) => {
         resolve(normalizeBase(res && res.TUFF_WEB_BASE));
       });
-    });
-  }
-
-  function getPaused() {
-    return new Promise((resolve) => {
-      if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
-        resolve(false);
-        return;
-      }
-      chrome.storage.local.get([PAUSE_KEY], (res) => {
-        resolve(Boolean(res && res[PAUSE_KEY]));
-      });
-    });
-  }
-
-  function setPaused(next) {
-    return new Promise((resolve) => {
-      if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
-        resolve();
-        return;
-      }
-      chrome.storage.local.set({ [PAUSE_KEY]: Boolean(next) }, () => resolve());
     });
   }
 
@@ -210,18 +187,6 @@
     });
   }
 
-  function renderPauseUi(paused) {
-    const btn = document.getElementById("pause-toggle");
-    const status = document.getElementById("pause-status");
-    if (btn) {
-      btn.textContent = paused ? "再開" : "一時停止";
-      btn.className = paused ? "btn ok" : "btn warn";
-    }
-    if (status) {
-      status.textContent = paused ? "状態: 一時停止中" : "状態: 稼働中";
-    }
-  }
-
   async function load() {
     try {
       const items = await fetchPending();
@@ -233,11 +198,5 @@
 
   document.getElementById("open-history")?.addEventListener("click", openHistory);
   document.getElementById("refresh")?.addEventListener("click", load);
-  document.getElementById("pause-toggle")?.addEventListener("click", async () => {
-    const current = await getPaused();
-    await setPaused(!current);
-    renderPauseUi(!current);
-  });
-  getPaused().then(renderPauseUi);
   load();
 })();

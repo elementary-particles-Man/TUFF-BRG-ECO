@@ -24,7 +24,6 @@
     }
     .wrap { padding: 10px; }
     .head { display: flex; gap: 8px; margin-bottom: 10px; }
-    .head.top { justify-content: space-between; align-items: center; }
     .btn {
       border: 0;
       border-radius: 8px;
@@ -35,9 +34,7 @@
       background: var(--primary);
     }
     .btn.ok { background: var(--ok); }
-    .btn.warn { background: #dc2626; }
     .muted { color: var(--muted); margin: 4px 0 8px; }
-    .status { font-size: 11px; color: var(--muted); }
     #list { display: grid; gap: 8px; max-height: 430px; overflow: auto; }
     .item {
       background: var(--panel);
@@ -52,10 +49,6 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="head top">
-      <button id="pause-toggle" class="btn warn">一時停止</button>
-      <div id="pause-status" class="status">状態: 稼働中</div>
-    </div>
     <div class="head">
       <button id="open-history" class="btn">履歴を開く</button>
       <button id="refresh" class="btn">再読込</button>

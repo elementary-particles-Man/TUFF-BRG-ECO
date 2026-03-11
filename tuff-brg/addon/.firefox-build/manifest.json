@@ -1,0 +1,44 @@
+{
+  "manifest_version": 2,
+  "name": "TUFF-BRG Addon",
+  "version": "1.3.1",
+  "description": "TUFF Bridge Monitor (Firefox)",
+  "permissions": [
+    "storage",
+    "tabs",
+    "contextMenus",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "TUFF-BRG",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "booster.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "tuff-brg@local",
+      "strict_min_version": "109.0"
+    }
+  }
+}

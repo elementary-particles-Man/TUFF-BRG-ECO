@@ -42,6 +42,10 @@ pub struct StreamFragmentPayload {
     pub url: String,
     pub selector: String,
     pub fragment: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_ts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub context: StreamContext,
 }
 
