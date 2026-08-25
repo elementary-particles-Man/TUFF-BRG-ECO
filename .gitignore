@@ -27,3 +27,6 @@ tuff.wal
 
 # DB
 /_tuffdb/
+
+# Local ephemeral development helpers
+.scratch/
