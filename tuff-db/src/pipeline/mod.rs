@@ -11,5 +11,5 @@ pub use gap_resolver::LlmGapResolver;
 pub use ingest::IngestPipeline;
 pub use llm_abstractor::LlmAbstractor;
 pub use llm_verifier::LlmVerifier;
-pub use mock::{DummyAbstractGenerator, DummyFetcher, DummySplitter, DummyVerifier};
+pub use mock::{DummyAbstractGenerator, DummyFetcher, DummySplitter, DummyVerifier, LocalFetcher, LocalVerifier};
 pub use traits::{AbstractGenerator, ClaimVerifier, FactFetcher, GapResolver, InputSplitter};

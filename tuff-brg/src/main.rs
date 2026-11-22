@@ -32,7 +32,7 @@ use transformer_neo::lightweight::{
 use transformer_neo::models::{AgentIdentity, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
-    IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
+    IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier, LocalFetcher, LocalVerifier,
     WebFetcher,
 };
 
@@ -52,6 +52,7 @@ struct PendingFact {
 
 enum Verifier {
     Dummy(DummyVerifier),
+    Local(LocalVerifier),
     Llm(LlmVerifier),
 }
 
@@ -64,6 +65,7 @@ impl ClaimVerifier for Verifier {
     ) -> anyhow::Result<transformer_neo::pipeline::traits::VerificationResult> {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
+            Verifier::Local(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,
         }
     }
@@ -72,6 +74,21 @@ impl ClaimVerifier for Verifier {
 enum Abstractor {
     Dummy(DummyAbstractGenerator),
     Llm(LlmAbstractor),
+}
+
+enum Fetcher {
+    Local(LocalFetcher),
+    Web(WebFetcher),
+}
+
+#[async_trait]
+impl transformer_neo::pipeline::FactFetcher for Fetcher {
+    async fn fetch(&self, fragment: &str) -> anyhow::Result<Vec<transformer_neo::models::RequiredFact>> {
+        match self {
+            Fetcher::Local(v) => v.fetch(fragment).await,
+            Fetcher::Web(v) => v.fetch(fragment).await,
+        }
+    }
 }
 
 #[async_trait]
@@ -109,7 +126,7 @@ struct AppState {
     pipeline: Arc<
         IngestPipeline<
             DummySplitter,
-            WebFetcher,
+            Fetcher,
             Verifier,
             Abstractor,
             TuffEngine,
@@ -147,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
 
     let verifier = match api_key.as_deref() {
         Some(key) if valid_api_key(key) => Verifier::Llm(LlmVerifier::new(key, &model)),
-        _ => Verifier::Dummy(DummyVerifier),
+        _ => Verifier::Local(LocalVerifier),
     };
 
     let abstractor = match api_key.as_deref() {
@@ -160,9 +177,18 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    let local_mode = env::var("TUFF_INGEST_MODE").ok().as_deref() == Some("local")
+        || env::var("TUFF_EXTERNAL_FETCH").ok().as_deref() != Some("1")
+        || !api_key.as_deref().is_some_and(valid_api_key);
+    let fetcher = if local_mode {
+        Fetcher::Local(LocalFetcher)
+    } else {
+        Fetcher::Web(WebFetcher::new())
+    };
+
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
-        fetcher: WebFetcher::new(),
+        fetcher,
         verifier,
         generator: abstractor,
         db: engine,
@@ -423,12 +449,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
             let ops = match ingest_result {
                 Ok(Ok(v)) => v,
-                Ok(Err(_)) => {
-                    log_line("INGEST: error");
+                Ok(Err(error)) => {
+                    log_line(&format!("INGEST: error stage=pipeline cause={:#}", error));
                     continue;
                 }
                 Err(_) => {
-                    log_line("INGEST: timeout");
+                    log_line("INGEST: timeout stage=pipeline timeout_ms=3000");
                     continue;
                 }
             };
@@ -443,8 +469,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 status = outcome.status;
                 confidence = outcome.confidence;
                 evidence_count = outcome.evidence_count;
+                let source = if outcome.reason.starts_with("local ingest") {
+                    "Local"
+                } else {
+                    "LLM"
+                };
                 reason = enrich_reason_with_timestamps(
-                    &format!("source=LLM {}", outcome.reason),
+                    &format!("source={} {}", source, outcome.reason),
                     &envelope,
                 );
                 if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {

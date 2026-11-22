@@ -1510,7 +1510,7 @@
     "blocker": "親mainへのmergeは未実施。PR #1をOPENで維持。"
   },
   "pageindex2gpt_phase3_lose_lose_2026_11_23": {
-    "status": "BLOCKED_BACKEND_PROCESSING",
+    "status": "PASS_LOCAL_INGEST_EXTERNAL_LLM_BLOCKED",
     "archive_retrieval": "PASS",
     "source_integrity": "PASS",
     "context_delivery": "PASS",
@@ -1523,11 +1523,14 @@
     "user_reexplanation_required": 0,
     "long_input_transport": "PASS: 380000 bytes received in isolated network namespace",
     "sigint_shutdown": "PASS: exit code 0",
-    "brg_processing": "BLOCKED: INGEST error due external AI/backend configuration",
+    "brg_processing": "PASS_LOCAL: LocalFetcher→GrayMid(not externally verified)→WAL→JudgeResult/STOP",
+    "local_ingest": {"sent_bytes": 380000, "wal_before_bytes": 0, "wal_after_bytes": 380422, "result_status": "GRAY_MID", "confidence": 0.0, "sigint_exit": 0},
+    "error_taxonomy": {"external_http": "stage=fetch; external fetch requires TUFF_EXTERNAL_FETCH=1", "llm_call": "stage=verify or stage=abstract", "db_write": "stage=db_append", "timeout": "stage=pipeline timeout_ms=3000"},
+    "external_llm_ingest": "BLOCKED: external AI/backend configuration unavailable; no Dummy WHITE fallback",
     "response_sha256": "7e099a0d5daf309d39340551dcd7ce3b401fbfff3161dc0b9ed5e0488e86964c",
     "child_commit": "db15dc3f7cd4351acac48dd95fd6437b0f2f9584",
     "private_report": "/home/flux/GPTMem/reports/phase3.json",
     "raw_response": "/home/flux/GPTMem/audits/phase3-ai-response-codex-r2.txt",
-    "completion_reason": "実AI応答の適用検証はPASSだが、BRG後段の処理完了が未成立。Phase 3完了とは宣言しない。"
+    "completion_reason": "APIなしlocal ingestの後段処理完了はPASS。外部LLM経路のみBLOCKED。"
   }
 }
