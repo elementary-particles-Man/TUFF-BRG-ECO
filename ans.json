@@ -1469,7 +1469,7 @@
     "official_pageindex_status": "PASS",
     "child_remote": "https://github.com/elementary-particles-Man/PageIndex2GPT.git",
     "child_commit": "ed69e913be11aed670871b020a9deed29eb3279d",
-    "parent_commit": "969defe656146d7961d25b6d642e8925d4fc1e75",
+    "parent_commit": "c72217c99330cbfa203353791855bf3459ecc1a0",
     "submodule_gitlink": "ed69e913be11aed670871b020a9deed29eb3279d",
     "pull_request": "https://github.com/elementary-particles-Man/TUFF-BRG-ECO/pull/1",
     "clone_test": "PASS",
