@@ -1468,9 +1468,9 @@
     },
     "official_pageindex_status": "PASS",
     "child_remote": "https://github.com/elementary-particles-Man/PageIndex2GPT.git",
-    "child_commit": "ed69e913be11aed670871b020a9deed29eb3279d",
-    "parent_commit": "c72217c99330cbfa203353791855bf3459ecc1a0",
-    "submodule_gitlink": "ed69e913be11aed670871b020a9deed29eb3279d",
+    "child_commit": "616cd788b0ba0e3e2c8f11ce224417a0dcee2d92",
+    "parent_commit": "4708a43d7a8bed5fe966c46fda6c65463242a723",
+    "submodule_gitlink": "616cd788b0ba0e3e2c8f11ce224417a0dcee2d92",
     "pull_request": "https://github.com/elementary-particles-Man/TUFF-BRG-ECO/pull/1",
     "clone_test": "PASS",
     "commands_run": [
@@ -1486,6 +1486,27 @@
     "blockers": [
       "PR #1は作成済みだが、親mainへのmergeは未実施"
     ],
-    "private_evidence": "/home/flux/GPTMem/audits/phase2-recovery-20261122.json"
+    "private_evidence": "/home/flux/GPTMem/audits/phase2-recovery-r2.json"
+  },
+  "pageindex2gpt_phase2_recovery_r2_2026_11_23": {
+    "status": "PASS_WITH_PR_OPEN",
+    "official_pageindex_status": "PASS",
+    "official_pageindex_version": "0.7.4",
+    "official_tree_sha256": "831d80656397d8bb292bbaf0d6e049cafa1b7c0b0902d17388f0ac066fbfa6f3",
+    "official_tree_nodes": 200,
+    "mapped_messages": 198,
+    "structural_nodes": 2,
+    "r2_pack": "/home/flux/GPTMem/packs/conversation-memory-01bf27fa29b96f7a-phase2-r2.tar.zst",
+    "r2_pack_sha256": "04d5de64ad7fec38a3c161cdafeb4066bbc31b4e780c1586c0cdd457b0c8ebd6",
+    "source_sha256": "01bf27fa29b96f7a29443a765e46ab516c4dde2e70b924e7424631755986f913",
+    "message_counts": {"all": 198, "prompt": 100, "response": 98},
+    "child_remote": "https://github.com/elementary-particles-Man/PageIndex2GPT.git",
+    "child_commit": "616cd788b0ba0e3e2c8f11ce224417a0dcee2d92",
+    "parent_pr": "https://github.com/elementary-particles-Man/TUFF-BRG-ECO/pull/1",
+    "parent_commit": "4708a43d7a8bed5fe966c46fda6c65463242a723",
+    "submodule_gitlink": "616cd788b0ba0e3e2c8f11ce224417a0dcee2d92",
+    "tests": "PASS",
+    "private_evidence": "/home/flux/GPTMem/audits/phase2-recovery-r2.json",
+    "blocker": "親mainへのmergeは未実施。PR #1をOPENで維持。"
   }
 }
