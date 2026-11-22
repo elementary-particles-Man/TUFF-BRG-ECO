@@ -157,5 +157,1335 @@
       "compat": "OVERRIDE_SELECTORS 未設定時は既存セレクタをそのまま使用",
       "warning": "Contains/Exact判定は現時点でタグ名規則（id判定）に基づく"
     }
+  },
+  "next_instruction_execution_2": {
+    "status": "APPLIED_AND_VERIFIED",
+    "source": "CODE_REVIEW_AND_NEXT_STEPS (2026-02-09T09:10:00+09:00)",
+    "tasks": {
+      "TASK-007": {
+        "result": "done",
+        "changes": [
+          "tuff-db/src/lib.rs に pub mod lightweight; を追加",
+          "tuff-db/src/lightweight/mod.rs を新規作成し、LightweightVerifier/TagIndex等を pub export"
+        ]
+      },
+      "TASK-008": {
+        "result": "done",
+        "changes": [
+          "tuff-brg/src/main.rs の AppState に lightweight_verifier: Option<Arc<LightweightVerifier>> を追加",
+          "main() で lightweight verifier を初期化し AppState に注入",
+          "MeaningDBは TUFF_LIGHTWEIGHT_MEANING_PATH (既定: _tuffdb/lightweight/meaning.db) + TUFF_MEANING_DB をマージ"
+        ]
+      },
+      "TASK-009": {
+        "result": "done",
+        "changes": [
+          "ingest_task に Cache First ロジックを追加（hit時は pipeline.ingest をスキップ）",
+          "Cache hit時は JudgeResult を即時返却（status=WHITE, confidence=1.0, reasonに source=Cache）",
+          "Miss時は既存 pipeline.ingest を実行し、reason に source=LLM を付与"
+        ]
+      }
+    },
+    "files_modified": [
+      "tuff-db/src/lib.rs",
+      "tuff-db/src/lightweight/mod.rs",
+      "tuff-db/src/lightweight/verifier.rs",
+      "tuff-brg/src/main.rs"
+    ],
+    "validation": {
+      "cargo_check": "passed",
+      "regression_script": "passed"
+    }
+  },
+  "type": "RESPONSE",
+  "status": "DONE",
+  "phase": "PHASE_4_RELEASE_PREP",
+  "tasks": {
+    "TASK-013": {
+      "status": "implemented",
+      "file": "Dockerfile",
+      "notes": [
+        "multi-stage build (rust:latest -> debian:bookworm-slim)",
+        "release binary: tuff_brg",
+        "EXPOSE 8787",
+        "VOLUME /app/_tuffdb",
+        "ENTRYPOINT tuff_brg"
+      ]
+    },
+    "TASK-014": {
+      "status": "implemented",
+      "file": "scripts/pack_addon.sh",
+      "notes": [
+        "addon directory を zip 化",
+        "*.map と隠しファイルを除外",
+        "tuff-brg-addon-v{version}.zip 形式"
+      ],
+      "validation": "dist/tuff-brg-addon-v1.1.zip を生成確認"
+    },
+    "TASK-015": {
+      "status": "implemented",
+      "file": "RELEASE_NOTES.md",
+      "notes": [
+        "Title: TUFF-BRG-ECO v1.0 (Prototype)",
+        "Key Features / Live Fire / Requirements を記載"
+      ]
+    }
+  },
+  "test_preparation": {
+    "status": "DONE",
+    "deliverables": [
+      "docs/TEST_ACCEPTANCE.md (受け入れ基準)",
+      "scripts/test_suite.sh (統合テスト実行スクリプト)"
+    ],
+    "suite_result": {
+      "command": "scripts/test_suite.sh",
+      "result": "PASSED",
+      "cases": [
+        "cargo check",
+        "scripts/regression_check.sh",
+        "scripts/live_fire_test.sh"
+      ]
+    }
+  },
+  "ad_hoc_support_2026_02_09_chatgpt_connectivity": {
+    "type": "UNRELATED_DEV_SUPPORT",
+    "scope": "Helium/Hellium 通信設定で ChatGPT が通らない問題の復旧",
+    "observed_from_this_env": {
+      "proxy_env": "http_proxy/https_proxy/all_proxy/no_proxy は未設定",
+      "chat_openai": "HTTPS 到達OK (chat.openai.com -> chatgpt.com へ 308 リダイレクト)",
+      "api_openai": "HTTPS 到達OK (api.openai.com/v1/models -> 401: 認証未付与として正常応答)"
+    },
+    "likely_root_causes": [
+      "Helium 側の固定 Proxy 設定ミス",
+      "企業VPN/セキュリティ製品による TLS インスペクション",
+      "DNS 汚染または古いキャッシュ",
+      "WebSocket/HTTP2 を落とす中間プロキシ"
+    ],
+    "recovery_steps_priority": [
+      "Helium 設定で Proxy を `System` または `Direct` に変更し再起動",
+      "OS 環境変数 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY` を空にして再起動",
+      "DNS キャッシュをクリア（Linux: `sudo resolvectl flush-caches` など）",
+      "VPN/セキュリティ製品を一時停止して再試験",
+      "失敗時は Helium のログで `ECONNRESET`, `CERT`, `407 Proxy Authentication Required` を確認"
+    ],
+    "review": {
+      "improvements": [
+        "Helium に接続先テスト機能（chatgpt.com / api.openai.com / websocket）を追加",
+        "Proxy 設定を UI 表示して実効値を可視化"
+      ],
+      "unknowns": [
+        "対象が Helium Desktop か独自CLIか未確定",
+        "失敗時の具体的エラーコード/ログが未取得"
+      ]
+    },
+    "next_required_from_user": [
+      "Helium の正式名称/バージョン",
+      "失敗時ログ1行（エラーコード付き）",
+      "利用OS（Windows/macOS/Linux）"
+    ]
+  },
+  "repo_understanding_2026_02_11": {
+    "type": "REPOSITORY_UNDERSTANDING",
+    "status": "DONE",
+    "timestamp_iso": "2026-02-11T07:43:41+09:00",
+    "summary": {
+      "workspace": "Rust workspace with 2 crates: `tuff-brg` (middleware/ws) and `tuff-db` (core + lightweight)",
+      "goal": "LLM hallucination suppression via fast-path fact checks and WAL-based verifiable pipeline",
+      "current_phase": "PHASE_4_RELEASE_PREP (based on existing ans.json)"
+    },
+    "architecture": {
+      "layers": [
+        "Addon (`tuff-brg/addon`): DOM fragment extraction + WS streaming + throttle",
+        "Bridge (`tuff-brg`): WS server, Fast Path(cache), LLM ingest, STOP/CONTINUE control, history API",
+        "DB (`tuff-db`): pipeline + WAL engine + lightweight verifier/storage"
+      ]
+    },
+    "runtime_flow": {
+      "fast_path": "`LightweightVerifier` checks `tag/payload` first. Hit -> WHITE immediate response. Mismatch -> SMOKE + STOP.",
+      "llm_path": "Unknown in cache -> `pipeline.ingest()` with 3s timeout -> JudgeResult + optional STOP.",
+      "history": "`/history/api/*` serves static `history_out/*.json` then merges lightweight WAL snapshot at response time."
+    },
+    "key_files": [
+      "README.md",
+      "docs/protocol.md",
+      "tuff-brg/src/main.rs",
+      "tuff-db/src/lightweight/verifier.rs",
+      "tuff-db/src/lightweight/storage.rs",
+      "tuff-db/src/pipeline/ingest.rs"
+    ],
+    "improvements": [
+      "Lightweight spec fixed in docs, but protocol doc is still marked Draft; freeze versioning and backward compatibility policy.",
+      "`shutdown_signal()` currently calls `std::process::exit(0)`; validate flush guarantees for in-flight writes under stress.",
+      "History generation is still offline (`history_compile`); automate trigger policy if runtime freshness is required."
+    ],
+    "open_questions": [
+      "TagDB key canonical form is implemented, but ownership of canonicalization (addon/bridge/dbどこで最終確定するか) is not fully explicit.",
+      "MeaningDB value semantics: plain snippet vs structured constraints (exact/contains/per-tag rule extension) still limited.",
+      "Bridge↔Lightweight integration policy: embedded verifier in-process vs separate lightweight TCP daemon for production."
+    ],
+    "notes": {
+      "compat": "Current behavior matches AGENTS progress notes (cache-first + watch channel + SIGINT/SIGTERM handling).",
+      "risk": "If a different TTY process is alive, Ctrl+C perception can appear inconsistent (already noted in AGENTS)."
+    }
+  },
+  "firefox_addon_2026_02_11": {
+    "type": "ADDON_FIREFOX_STATUS",
+    "status": "READY",
+    "timestamp_iso": "2026-02-11T07:44:00+09:00",
+    "already_exists": true,
+    "evidence": {
+      "manifest_firefox": "tuff-brg/addon/manifest.firefox.json (MV2 + gecko id)",
+      "build_script": "tuff-brg/addon/build_firefox_addon.sh",
+      "build_output_dir": "tuff-brg/addon/.firefox-build/manifest.json"
+    },
+    "artifact": {
+      "path": "dist/tuff-brg-addon-firefox-v1.3.1.zip",
+      "size_bytes": 14565
+    },
+    "install": {
+      "temporary": "about:debugging -> このFirefox -> 一時的なアドオンを読み込む -> tuff-brg/addon/.firefox-build/manifest.json"
+    },
+    "review": {
+      "improvements": [],
+      "unknowns": [
+        "AMO配布向け署名(xpi署名)は未実施"
+      ]
+    }
+  },
+  "firefox_timestamp_behavior_2026_02_11": {
+    "type": "Q_AND_A",
+    "question": "デーモンが動いてないとタイムスタンプは付かないか？",
+    "answer": "一部のみ必要。会話ターンの可視タイムスタンプはデーモン無しでも付与される。STOPオーバーレイ内の検証メタ時刻はデーモンからJudgeResult/ControlCommandを受信した時に意味を持つ。",
+    "details": {
+      "without_daemon": [
+        "`annotateTurns()` による DOM タイムスタンプ（.gpt-booster-ts）は動作",
+        "WebSocket未接続時はフラグメントをキューし再接続待ち"
+      ],
+      "with_daemon": [
+        "JudgeResult受信で `lastJudgeTs` 等が更新",
+        "STOP時のコピー用メタ行 `[ts][AI:..] Claim..` が検証結果ベースになる"
+      ]
+    },
+    "file_refs": [
+      "tuff-brg/addon/booster.js:825",
+      "tuff-brg/addon/booster.js:209",
+      "tuff-brg/addon/booster.js:225",
+      "tuff-brg/addon/booster.js:438",
+      "tuff-brg/addon/booster.js:548"
+    ]
+  },
+  "firefox_timestamp_fix_2026_02_11": {
+    "type": "BUGFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T07:55:00+09:00",
+    "symptom": "ChatGPT上でタイムスタンプが表示されない（通信は正常）",
+    "root_cause": "`handleMutations()` 内で `enableTurnBadges = !isChatGptPage()` となっており、ChatGPTだけ描画を無効化していた。",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": "`enableTurnBadges` を `true` に変更し、ChatGPTでも annotateTurns() を有効化。"
+    },
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip (rebuilt)",
+    "review": {
+      "improvements": [],
+      "unknowns": [
+        "ChatGPTのDOM変化でselector不一致時はOVERRIDE_SELECTORS調整が必要"
+      ]
+    }
+  },
+  "firefox_timestamp_fix_2_2026_02_11": {
+    "type": "BUGFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:01:00+09:00",
+    "symptom": "修正後もChatGPTでタイムスタンプ未表示",
+    "root_cause": "`start()` のChatGPT分岐が early return しており、`ensureTimestampStyle()`/`annotateTurns()`/`handleMutations()` が未実行だった。",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": [
+        "ChatGPT分岐で `ensureTimestampStyle(); annotateTurns(); handleMutations();` を実行",
+        "軽量ポーリング内でも `annotateTurns()` を継続実行"
+      ]
+    },
+    "validation": [
+      "`node --check tuff-brg/addon/booster.js` pass",
+      "Firefox build 再生成済み"
+    ],
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip"
+  },
+  "firefox_timestamp_troubleshoot_2026_02_11": {
+    "type": "TROUBLESHOOTING",
+    "status": "INSTRUCTION",
+    "timestamp_iso": "2026-02-11T08:05:00+09:00",
+    "assessment": {
+      "csp_log": "貼付のCSP/script-src-elemはChatGPTページ内インラインscriptの警告。content_script自体の注入可否とは別問題。",
+      "sourcemap_log": "404 source map は実害なし。"
+    },
+    "steps": [
+      "about:debugging で当該アドオンを再読み込み",
+      "ChatGPTタブを完全リロード(Ctrl+Shift+R)",
+      "コンソールで `window.__GPT_BOOSTER_NEW__` が true か確認",
+      "コンソールで `document.querySelectorAll(\".gpt-booster-ts\").length` を確認",
+      "0 の場合は `document.querySelectorAll(\"[data-message-author-role]\").length` と `location.hostname` を確認"
+    ],
+    "next_action_rule": "上記3つの値を受け取り次第、selectorの実行時上書きまたはコード修正を即時実施する"
+  },
+  "firefox_timestamp_fix_3_2026_02_11": {
+    "type": "BUGFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:04:00+09:00",
+    "symptom": "ChatGPT画面でタイムスタンプ不表示が継続",
+    "root_cause_hypothesis": "最新ChatGPT DOMで `data-message-author-role` が取得できず role 判定が失敗",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": "`detectRole()` に class/レイアウト座標ベースの role 推定フォールバックを追加"
+    },
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip",
+    "notes": "CSP/script-src と source map 404 は本件の直接原因ではない"
+  },
+  "firefox_timestamp_visibility_fix_2026_02_11": {
+    "type": "BUGFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:08:00+09:00",
+    "observation": "`window.__GPT_BOOSTER_NEW__` はcontent script隔離環境のためページコンソールではundefinedになり得る。` .gpt-booster-ts `件数533でバッジ生成自体は確認。",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": "`.gpt-booster-ts` に `display/position/z-index/opacity/background` を `!important` 付きで付与し、ChatGPT既存CSSに埋もれないよう強制表示"
+    },
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip"
+  },
+  "firefox_input_lag_fix_2026_02_11": {
+    "type": "PERF_FIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:12:00+09:00",
+    "symptom": "入力が重い/エラー発生",
+    "root_cause": "ChatGPT軽量モードでも `annotateTurns()` が全ターン走査され、数百バッジでDOM負荷増大",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`annotateRecentTurns(limit)` を追加し最新ターンのみ注釈",
+        "`pruneTimestampBadges(max)` を追加し古いバッジを間引き",
+        "ChatGPTポーリングを 1200ms -> 1800ms へ緩和"
+      ]
+    },
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip"
+  },
+  "timestamp_log_copy_feature_2026_02_11": {
+    "type": "FEATURE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:35:00+09:00",
+    "intent": "最終コピペ時に全文ログの時間把握を可能にする",
+    "implementation": {
+      "file": "tuff-brg/addon/booster.js",
+      "details": [
+        "Alt+Shift+L で時刻付き全文ログをクリップボードへコピー",
+        "行形式: `[YYYY-MM-DD HH:mm:ss] [USER|AI] <text>`",
+        "表示バッジとは独立して動作（低負荷）"
+      ]
+    },
+    "artifact": "dist/tuff-brg-addon-firefox-v1.3.1.zip"
+  },
+  "gemini_ui_overpaint_hotfix_2026_02_11": {
+    "type": "HOTFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:40:00+09:00",
+    "symptom": "Gemini画面でタイムスタンプが多重表示され、緑/青バーが縦に伸びてUIが崩れる",
+    "root_cause": [
+      "Geminiでは `turns` セレクタが広く、同一ターンに近いDOM断片へ重複注釈が発生",
+      "`.gpt-booster-ts` が flex レイアウト内で stretch され、縦長の塗りつぶしに見えるケースがある"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`.gpt-booster-ts` を `display:inline-block` + `align-self:flex-start` + `flex:0 0 auto` へ変更し伸長を抑止",
+        "Geminiページでは `annotateTurns()` / `annotateRecentTurns()` で `turns` 一括候補を除外し、user/assistant候補中心に限定"
+      ]
+    },
+    "user_action": [
+      "アドオンを再読み込み（about:debugging など）",
+      "Geminiタブをハードリロード（Ctrl+Shift+R）"
+    ],
+    "review": {
+      "improvements": [
+        "Gemini DOM変更時は `OVERRIDE_SELECTORS.gemini` で最小セレクタに寄せると安定"
+      ],
+      "unknowns": [
+        "Gemini側DOMが再変更された場合、assistant判定フォールバックの追加調整が必要な可能性"
+      ]
+    }
+  },
+  "firefox_input_blocker_hotfix_2026_02_11": {
+    "type": "HOTFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:48:00+09:00",
+    "symptom": "Firefoxでチャット入力欄に入力できない",
+    "root_cause": [
+      "注釈対象セレクタが広く、composer/入力欄コンテナがターン扱いされるケースがある",
+      "入力DOMにタイムスタンプ要素が prepend され、編集動作を阻害する"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`isComposerLikeNode()` を追加して textarea/input/contenteditable/role=textbox/form配下を除外",
+        "`annotateTurns()` と `annotateRecentTurns()` で composer系ノードを注釈対象から除外"
+      ]
+    },
+    "user_action": [
+      "アドオン再読み込み",
+      "対象タブをハードリロード"
+    ],
+    "review": {
+      "improvements": [
+        "user selector の `data-testid*=user` は将来さらに絞るのが安全"
+      ],
+      "unknowns": [
+        "サイト側DOM再変更で新しいcomposer属性名が出た場合は除外条件追加が必要"
+      ]
+    }
+  },
+  "chatgpt_stream_error_emergency_disable_2026_02_11": {
+    "type": "EMERGENCY_MITIGATION",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T08:55:00+09:00",
+    "symptom": "ChatGPTで『ストリーミングが中断されました』が継続し、拡張バッジも画面崩れ要因になっている",
+    "mitigation": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": "`CHATGPT_EMERGENCY_DISABLE` を true に変更し、ChatGPTページでは拡張処理を実行しない"
+    },
+    "impact": [
+      "ChatGPT上ではタイムスタンプ付与/WS送信/監視処理を一時停止",
+      "Gemini側の動作には影響しない"
+    ],
+    "user_action": [
+      "Firefoxで拡張を再読み込み",
+      "ChatGPTタブをハードリロード(Ctrl+Shift+R)"
+    ],
+    "review": {
+      "improvements": [
+        "ChatGPT向けは完全停止ではなく『DOM書き込みなし・観測のみ』へ段階復帰するのが次の実装候補"
+      ],
+      "unknowns": [
+        "ChatGPT側サービス/回線要因の同時発生有無は未切り分け"
+      ]
+    }
+  },
+  "chatgpt_emergency_cleanup_2026_02_11": {
+    "type": "EMERGENCY_MITIGATION",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T09:02:00+09:00",
+    "symptom": "緊急停止フラグ適用後もChatGPTでエラー継続",
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "change": "ChatGPTで緊急停止時に `.gpt-booster-ts`/style/overlay/warning/data属性 を自動削除してからreturn"
+    },
+    "user_action": [
+      "アドオン再読み込み",
+      "ChatGPTタブを閉じて新規タブで開き直し"
+    ],
+    "review": {
+      "improvements": [
+        "manifest側でChatGPT matchを切るビルドバリアントを用意すると再発防止になる"
+      ],
+      "unknowns": [
+        "ChatGPTサーバ側の同時障害かどうかは未判定"
+      ]
+    }
+  },
+  "firefox_manifest_chatgpt_detach_2026_02_11": {
+    "type": "EMERGENCY_HARD_BLOCK",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-11T09:06:00+09:00",
+    "symptom": "緊急停止フラグでもChatGPT側で障害が継続",
+    "fix": {
+      "file": "tuff-brg/addon/manifest.firefox.json",
+      "changes": [
+        "permissions から chatgpt/chat.openai/openai wildcard を除外",
+        "content_scripts.matches を gemini.google.com のみに限定"
+      ]
+    },
+    "impact": [
+      "Firefox版アドオンはGemini専用になる",
+      "ChatGPT上で拡張が一切動かないため干渉は物理的にゼロ"
+    ],
+    "user_action": [
+      "about:debugging でアドオン再読み込み",
+      "ChatGPTタブをすべて閉じて開き直し"
+    ]
+  },
+  "firefox_load_path_2026_02_11": {
+    "type": "Q_AND_A",
+    "status": "ANSWERED",
+    "timestamp_iso": "2026-02-11T19:22:00+09:00",
+    "question": "アドオン読み込み場所はどこか",
+    "answer": {
+      "temporary_load_manifest": "/home/flux/mnt/thpdoc/Develop/TUFF-BRG-ECO/tuff-brg/addon/.firefox-build/manifest.json",
+      "package_zip": "/home/flux/mnt/thpdoc/Develop/TUFF-BRG-ECO/dist/tuff-brg-addon-firefox-v1.3.1.zip"
+    },
+    "steps": [
+      "about:debugging -> このFirefox -> 一時的なアドオンを読み込む",
+      "上記 manifest.json を選択"
+    ]
+  },
+  "thpdoc_ext4_single_share_2026_02_14": {
+    "type": "OPS_ALIGNMENT",
+    "status": "APPLIED_AND_VERIFIED",
+    "timestamp_iso": "2026-02-14T12:34:00+09:00",
+    "policy": "共有は Ext4-Data 単体（THPDOC）。Storage はサーバ専用。rclone(Gdrive) は Ext4-Data のバックアップ用途のみ。",
+    "changes": [
+      "server: /dev/sdd1(Ext4-Data) を /mnt/Ext4-Data にマウント",
+      "server: /etc/fstab の Ext4-Data UUID 行を有効化",
+      "server: NFS export を /mnt/Gdrive から /mnt/Ext4-Data へ切替",
+      "client: /home/flux/mnt/thpdoc を 192.168.234.7:/mnt/Ext4-Data へ再マウント"
+    ],
+    "verification": [
+      "mount: 192.168.234.7:/mnt/Ext4-Data on /home/flux/mnt/thpdoc type nfs4",
+      "/home/flux/mnt/thpdoc/Develop/TUFF-BRG-ECO 読み取りOK",
+      "/home/flux/mnt/thpdoc/obsidian 読み取りOK"
+    ],
+    "review": {
+      "improvements": [
+        "/etc/fstab(クライアント)にNFSエントリを追加し再起動後も自動接続",
+        "rclone-gdrive はバックアップ時のみ起動する運用（常時mount不要）にすると誤用防止"
+      ],
+      "unknowns": [
+        "なし"
+      ]
+    }
+  },
+  "storage_spelling_fix_2026_02_14": {
+    "type": "TEXT_FIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-14T12:40:00+09:00",
+    "summary": "`Strage` 表記を `Storage` に修正",
+    "files": [
+      "ans.json"
+    ],
+    "review": {
+      "improvements": [
+        "ユーザー向け文言は `Storage` で統一"
+      ],
+      "unknowns": [
+        "実ディレクトリ名が `/mnt/Strage` のままかはシステム仕様依存（今回は文言のみ修正）"
+      ]
+    }
+  },
+  "firefox_chatgpt_session_reset_2026_02_14": {
+    "type": "OPS_FIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-14T15:38:00+09:00",
+    "scope": "chatgpt.com/openai.com セッションのみ初期化",
+    "actions": [
+      "cookies.sqlite から chatgpt/openai ドメインcookie削除",
+      "permissions.sqlite から chatgpt/openai origin削除",
+      "webappsstore.sqlite から chatgpt/openai originKey削除",
+      "storage/default の chatgpt/openai ディレクトリ削除"
+    ],
+    "verification": [
+      "cookies_remaining=0",
+      "webstorage_remaining=0"
+    ],
+    "review": {
+      "improvements": [
+        "今後はプロセスkillを使わず、対象セッションDBのみ操作する"
+      ],
+      "unknowns": [
+        "Firefox起動後に拡張起因の再干渉がある場合は addon設定再確認が必要"
+      ]
+    }
+  },
+  "gemini_badge_overlap_fix_2026_02_17": {
+    "type": "HOTFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-17T15:35:00+09:00",
+    "scope": "Gemini画面でタイムスタンプバッジが重複・密集表示される問題の修正",
+    "symptom": [
+      "同一ターンに USER タグが複数表示される",
+      "表示位置が集中して可読性が低下する"
+    ],
+    "root_cause": [
+      "Gemini DOMで `data-message-author-role=\"model\"` が `assistant` として正規化されず、候補ノード判定が不安定",
+      "同一発話（同一storage key/fingerprint）に対する重複バッジ排他がなかった"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "role正規化 `normalizeRole()` を追加（model/ai -> assistant, human -> user）",
+        "重複排他 `removeDuplicateBadgesByKey()` を追加し、同一キーの既存バッジを除去",
+        "annotateTurns / annotateRecentTurns / collectConversationLogWithTimestamps で正規化後roleを使用",
+        "upsertVisibleTimestamp で正規化roleのみ許可し、badgeへ `data-booster-key` を付与"
+      ]
+    },
+    "validation": {
+      "syntax_check": {
+        "command": "node --check tuff-brg/addon/booster.js",
+        "result": "passed"
+      }
+    },
+    "user_action": [
+      "Chrome の `chrome://extensions` で TUFF-BRG Addon を再読み込み",
+      "Gemini タブをハードリロード（Ctrl+Shift+R）"
+    ],
+    "review": {
+      "improvements": [
+        "Gemini専用の turn container selector を追加し、候補抽出をさらに狭めると将来のDOM変更耐性が上がる",
+        "DEBUGログに badgeKey を一時出力できるフラグを用意すると再発時の切り分けが早い"
+      ],
+      "unknowns": [
+        "GeminiのA/BテストDOMで `data-message-author-role` が欠落するパターンの網羅確認は未実施"
+      ]
+    }
+  },
+  "gemini_badge_policy_update_2026_02_17": {
+    "type": "UI_POLICY_UPDATE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-17T15:50:00+09:00",
+    "scope": "ユーザー要望に合わせたタイムスタンプ表示ポリシー変更",
+    "policy": [
+      "USERバッジは表示しない",
+      "Assistantバッジは常に1つのみ（最新ターン）",
+      "AssistantラベルはURL由来で `GPT` / `Gemini` を表示"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`llmLabelFromUrl()` を追加し、ホスト名から表示ラベルを決定",
+        "`removeOtherAssistantBadges()` を追加し、最新以外のassistantバッジを除去",
+        "`annotateTurns()` と `annotateRecentTurns()` でassistantのみバッジ付与",
+        "会話ログコピー時のassistant表記も `GPT` / `Gemini` に統一"
+      ]
+    },
+    "validation": {
+      "syntax_check": {
+        "command": "node --check tuff-brg/addon/booster.js",
+        "result": "passed"
+      }
+    },
+    "review": {
+      "improvements": [
+        "将来のマルチLLM対応では、URLだけでなくDOM上のモデル名（例: Gemini 2.0 Pro）を優先すると精度が上がる"
+      ],
+      "unknowns": [
+        "Geminiで複数回答を並列表示するUI実験時に『最新1件』判定が期待どおりかは実画面で追加確認が必要"
+      ]
+    }
+  },
+  "gemini_user_badge_reenable_2026_02_17": {
+    "type": "UI_POLICY_TUNE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-17T16:00:00+09:00",
+    "scope": "USERバッジ表示の再調整",
+    "policy": [
+      "USERバッジは最新入力1件のみ表示",
+      "古いUSERバッジは自動削除",
+      "AIバッジは従来どおり最新1件を維持"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`removeOtherUserBadges()` を追加",
+        "`annotateTurns()` で最新USER rootを特定し、最後に1件だけ `upsertVisibleTimestamp(..., \"user\")`",
+        "`annotateRecentTurns()` でも同様に最新USER 1件のみ表示"
+      ]
+    },
+    "validation": {
+      "syntax_check": {
+        "command": "node --check tuff-brg/addon/booster.js",
+        "result": "passed"
+      }
+    },
+    "review": {
+      "improvements": [
+        "ユーザー送信イベント（submit/enter）フックに切り替えると、DOM再配置の影響を受けず入力完了時刻を固定しやすい"
+      ],
+      "unknowns": [
+        "Gemini UI更新で user selector が変わった場合は OVERRIDE_SELECTORS の `gemini.user` 調整が必要"
+      ]
+    }
+  },
+  "gemini_copy_log_pair_completeness_2026_02_17": {
+    "type": "LOG_COMPLETENESS_FIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-17T16:10:00+09:00",
+    "scope": "コピー時ログで USER/AI 時刻ペアを欠損させない対応",
+    "policy": [
+      "表示は USER 最新1件のみ",
+      "内部記録は全 USER ターン分を保持",
+      "ログコピー時は各入力/応答の時刻を復元可能にする"
+    ],
+    "fix": {
+      "file": "tuff-brg/addon/booster.js",
+      "changes": [
+        "`annotateTurns()` で全 USER に対して timestamp を記録し、表示は `removeOtherUserBadges(latestUserRoot)` で最新1件に制限",
+        "`annotateRecentTurns()` も同様に全 USER 記録 + 最新1件表示へ統一"
+      ]
+    },
+    "validation": {
+      "syntax_check": {
+        "command": "node --check tuff-brg/addon/booster.js",
+        "result": "passed"
+      }
+    },
+    "review": {
+      "improvements": [
+        "最終的には送信イベント時刻（submit hook）を一次ソースにすると、DOM再描画時の時刻揺れをさらに抑制可能"
+      ],
+      "unknowns": [
+        "過去ターンが仮想スクロールで未描画の場合、初回コピー時に未記録分が出る可能性がある（スクロール後に補完される）"
+      ]
+    }
+  },
+  "repository_overview_generation": {
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-19T00:00:00Z",
+    "task": "generate_repository_overview_md",
+    "output_file": "docs/TUFF_BRG_ECO_REPO_OVERVIEW.md",
+    "scope": {
+      "include": [
+        "tuff-brg/",
+        "tuff-db/",
+        "scripts/",
+        "root-level files",
+        "docs/",
+        "shared/",
+        "history_out/"
+      ],
+      "exclude": [
+        "target/",
+        "node_modules/",
+        ".git/",
+        "dist/"
+      ]
+    },
+    "review_notes": {
+      "improvements": [
+        "docs/TUFF_BRG_ECO_REPO_OVERVIEW.md に 3層構成・データフロー・ハイブリッド判定・STOP/CONTINUE を実装準拠で整理",
+        "Mermaid 図を4本追加して Addon->Bridge->DB および制御分岐を可視化",
+        "主要ソースファイルごとに Purpose/Responsibilities/Interfaces/Dependencies/Runtime Role を統一形式で記載"
+      ],
+      "open_questions": [
+        "`tuff-brg/addon/selector.js` はテキスト参照ファイルであり、ビルド時の実体リンク運用ルールを明文化するか",
+        "`docs/STATUS.md` の更新責務（手動/自動）を固定するか"
+      ]
+    }
+  },
+  "addon_gpt_enable_2026_02_19": {
+    "status": "APPLIED",
+    "task": "addon_gpt_enable",
+    "scope": "addon_only",
+    "files_modified": [
+      "tuff-brg/addon/booster.js",
+      "tuff-brg/addon/manifest.json",
+      "tuff-brg/addon/manifest.firefox.json",
+      "tuff-brg/addon/selector.js"
+    ],
+    "phase_results": {
+      "phase_1_emergency_unlock": "CHATGPT_EMERGENCY_DISABLE=false; ChatGPT early-return guard remains but inactive",
+      "phase_2_manifest_alignment": "manifest.json/manifest.firefox.json include chatgpt.com and chat.openai.com in matches and permissions; Gemini entries preserved",
+      "phase_3_selector_stabilization": "selector.js replaced with host-aware selector profile and latest complete assistant block picker; manifests load selector.js before booster.js",
+      "phase_4_stability_detection": "ChatGPT polling interval set to 1200ms; stable hold gate 1200ms; duplicate suppression by text+hash",
+      "phase_5_websocket_validation": "payload now includes origin(chatgpt/gemini/unknown), event_ts, fragment_hash; WS URL kept ws://127.0.0.1:8787",
+      "phase_6_safe_dom_policy": "CHATGPT_DOM_SAFE_MODE kept true; selector warning injection suppressed on ChatGPT via shouldAvoidDomWrites"
+    },
+    "validation": {
+      "node_check": [
+        "node --check tuff-brg/addon/booster.js",
+        "node --check tuff-brg/addon/selector.js"
+      ],
+      "manifest_json_parse": "passed"
+    },
+    "open_questions": [
+      "Firefox manifest is currently untracked in this working tree; add to git index as intended?",
+      "content script now loads selector.js first; if distribution pipeline excludes it, manifest load will fail"
+    ]
+  },
+  "addon_timestamp_per_turn_2026_02_19": {
+    "status": "APPLIED",
+    "summary": "ChatGPTで入出力ごとに時刻が出るよう表示絞り込みを解除",
+    "files": [
+      "tuff-brg/addon/booster.js"
+    ],
+    "changes": [
+      "SHOW_ALL_TURN_TIMESTAMPS=true を追加",
+      "removeOtherUserBadges/removeOtherAssistantBadges の実行を条件化し、全ターン表示を維持",
+      "ChatGPT annotateRecentTurns を 32 件に拡張",
+      "ChatGPT pruneTimestampBadges 上限を 220 に拡張"
+    ],
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ]
+  },
+  "implement_stop_continue_overlay_ux_2026_02_19": {
+    "status": "APPLIED",
+    "scope": "addon_only",
+    "file": "tuff-brg/addon/booster.js",
+    "results": {
+      "phase_1_decision_listener": "WebSocket onmessage を拡張し decision/command=STOP|CONTINUE を処理。JudgeResult/ControlCommand から fragment_hash を取得し、hash->turn mapping でターン紐付け",
+      "phase_2_overlay_design": "固定フローティング通知 (#tuff-brg-decision-float) を追加。STOP=赤, CONTINUE=緑。6秒で自動フェード",
+      "phase_3_soft_stop_behavior": "ChatGPTではメッセージ削除/本文改変なし。対象ターン opacity=0.5、timestamp横に STOP チップ、STOP時は disableClamp で自動スクロール抑止",
+      "phase_4_continue_behavior": "CONTINUE時は opacity を解除し、timestamp横に CONTINUE チップを表示",
+      "phase_5_virtual_scroll_safety": "dataset.tuffDecisionApplied / dataset.tuffDecisionHash / dataset.tuffTurnKey を導入し重複適用を抑止",
+      "phase_6_debug_mode": "DEV_MODE=true 時に decision payload と fragment_hash を console 出力"
+    },
+    "perf_and_ui_fixes": [
+      "ChatGPTポーリングで annotateRecentTurns 実行頻度を 1/6 に抑制",
+      "annotateRecentTurns(16), pruneTimestampBadges(120) に調整",
+      "header/nav を除外する isLikelyChatTurnRoot で誤バッジ（最上段固定）を抑止"
+    ],
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ]
+  },
+  "handoff_summary_2026_02_20": {
+    "status": "UPDATED",
+    "target": "addon",
+    "objective": "ChatGPT対応有効化 + STOP/CONTINUE 非侵襲UX + タイムスタンプ表示改善",
+    "what_was_done": [
+      "ChatGPT緊急停止ガードを無効化（CHATGPT_EMERGENCY_DISABLE=false）",
+      "WebSocket payloadに origin(chatgpt/gemini) と fragment_hash を付与",
+      "selector.js を実体化し、ChatGPT/Gemini向けのホスト判定・最新complete assistant抽出を追加",
+      "manifest.json / manifest.firefox.json で ChatGPT ドメイン・selector.js ロード順を反映",
+      "ChatGPT向け STOP/CONTINUE UX を追加（右上フローティング通知6秒フェード、STOP時は対象ターンのみopacity=0.5、CONTINUEで解除）",
+      "decision と fragment_hash を hash->turn マッピングで紐付け、dataset.tuffDecisionApplied で重複適用を防止",
+      "最上段固定バッジ軽減のため ChatGPT ターン判定を強化（header/nav 除外）",
+      "UI負荷軽減として ChatGPT ポーリング時の重い再注釈処理を間引き（chatgptTick）"
+    ],
+    "files_touched_in_this_work": [
+      "tuff-brg/addon/booster.js",
+      "tuff-brg/addon/manifest.json",
+      "tuff-brg/addon/manifest.firefox.json",
+      "tuff-brg/addon/selector.js",
+      "docs/TUFF_BRG_ECO_REPO_OVERVIEW.md",
+      "ans.json"
+    ],
+    "verification_run": [
+      "node --check tuff-brg/addon/booster.js",
+      "node --check tuff-brg/addon/selector.js",
+      "manifest JSON parse check (manifest.json / manifest.firefox.json)"
+    ],
+    "current_known_issues": [
+      "ChatGPT は仮想スクロールのため、未描画の過去ターンは表示時にバッジが付与される",
+      "Bridge側が fragment_hash を返さない場合は latest JudgeResult claim hash へフォールバック紐付け"
+    ],
+    "next_actions_for_successor": [
+      "Chrome拡張を更新して実機確認（STOP/CONTINUE受信時の対象ターン紐付け確認）",
+      "必要なら CHATGPT_POLL_INTERVAL_MS / chatgptTick 間引き率を端末性能に合わせて微調整",
+      "Firefox配布が必要なら manifest.firefox.json を追跡対象に追加し .firefox-build 生成手順を固定化",
+      "不要な作業ツリー変更（既存の他ファイル差分）を切り分けてコミット単位を整理"
+    ],
+    "important_notes": [
+      "本ターンの実装は addon 層のみ（no architecture change）",
+      "Gemini挙動は維持、ChatGPTでは全画面STOPオーバーレイを使用せず非侵襲表示へ変更"
+    ]
+  },
+  "addon_user_ai_timestamp_literal_2026_02_25": {
+    "type": "ADDON_TIMESTAMP_LITERAL_UPDATE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-25T00:00:00+09:00",
+    "scope": "tuff-brg/addon/booster.js",
+    "request": {
+      "user": "入力送信時点でUserタイムスタンプを入力データに単純文字列として追加",
+      "ai": "AIタイムスタンプをDOM先頭に物理挿入"
+    },
+    "implemented": {
+      "user_timestamp_literal": [
+        "送信トリガー（Enter / submit / send系button click, capture phase）でcomposerを解決",
+        "入力末尾へ `[USER_TS:ISO8601]` を追記",
+        "多重挿入防止として600msクールダウン + 末尾重複検知を追加"
+      ],
+      "ai_timestamp_literal": [
+        "assistantターン先頭へ `.gpt-booster-inline-ts-assistant` を prepend",
+        "表示文字列は `[AI_TS:ISO8601]` を実テキストとして挿入",
+        "既存バッジ（.gpt-booster-ts）は従来どおり併存"
+      ],
+      "stability_adjustment": [
+        "内部テキスト抽出/フィンガープリントで `.gpt-booster-ts` と `.gpt-booster-inline-ts` を除外",
+        "これにより送信差分判定やhashがタイムスタンプ文字列で汚染されないようにした"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ],
+    "review": {
+      "improvements": [
+        "User文字列フォーマット（`[USER_TS:...]`）を設定値化すると運用要件に合わせやすい",
+        "AI挿入は現在assistant root先頭固定のため、将来DOM変更時はselector/anchor再調整が必要"
+      ],
+      "unknowns": [
+        "Gemini/ChatGPTの一部ABテストDOMで送信buttonの属性名が変わる場合、send判定正規表現の追加調整が必要"
+      ]
+    }
+  },
+  "addon_timestamp_visual_cleanup_2026_02_25": {
+    "type": "ADDON_UI_TUNE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-25T00:10:00+09:00",
+    "scope": "tuff-brg/addon/booster.js",
+    "request": "緑/青の追加タイムスタンプを削除し、AI表記をGemini等へ修正",
+    "implemented": {
+      "visual_cleanup": [
+        "可視バッジ `.gpt-booster-ts`（緑/青）のCSS定義を削除",
+        "`upsertVisibleTimestamp()` で `.gpt-booster-ts` のDOM生成/更新を停止",
+        "表示は先頭挿入の実テキスト（inline ts）のみに統一"
+      ],
+      "label_fix": [
+        "`AI_TS` 固定を廃止",
+        "URL由来ラベルで `[Gemini_TS:...]` / `[GPT_TS:...]` を挿入"
+      ],
+      "compat_adjustment": [
+        "STOP/CONTINUEチップの付与先を旧バッジから inline ts 要素へ変更"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ],
+    "review": {
+      "improvements": [
+        "不要化した `.gpt-booster-ts-*` 系ユーティリティ関数は次回整理で削減可能"
+      ],
+      "unknowns": [
+        "Unknownホスト時は `[AI_TS]` ではなく `[AI_TS]` 相当のフォールバックが必要か（現状は `<label>_TS`）"
+      ]
+    }
+  },
+  "addon_gemini_ui_row_filter_fix_2026_02_26": {
+    "type": "ADDON_BUGFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-26T17:25:00+09:00",
+    "scope": [
+      "tuff-brg/addon/booster.js",
+      "tuff-brg/addon/selector.js"
+    ],
+    "symptom": "Geminiで本文ではないUI行（例: 思考プロセス表示付近）にも `[Gemini_TS:...]` が重複表示される。",
+    "root_cause": [
+      "Gemini向けassistant/turnsセレクタが `class*=\"response\"` などを含み過広だったため、会話本文以外の行を拾っていた。",
+      "ピック処理・注釈処理で UI専用行（ボタン主体・制御文言のみ）を除外していなかった。"
+    ],
+    "implemented": {
+      "selector_narrowing": [
+        "Gemini assistant/turns を role属性・test-id・custom element中心へ限定",
+        "`div[class*=\"response\"]` / `aria-live=\"polite\"` 系の過検出要素を除外"
+      ],
+      "ui_row_guard": [
+        "`isGeminiUiOnlyControlNode()` を追加し、`思考プロセスを表示` などのUI行を注釈対象から除外",
+        "同ガードを `pickLatestWithText` / `annotateTurns` / `annotateRecentTurns` / `collectConversationLogWithTimestamps` に適用"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/booster.js",
+      "node --check tuff-brg/addon/selector.js"
+    ],
+    "review": {
+      "improvements": [
+        "Gemini ABテストDOM差異への追従のため、UI除外パターン（文言/属性）を `OVERRIDE_SELECTORS` と同系統で外部設定化すると保守しやすい。"
+      ],
+      "unknowns": [
+        "Gemini側の文言変更（例: 思考プロセス表示ラベル変更）時は、UI除外正規表現の追加が必要になる可能性がある。"
+      ]
+    }
+  },
+  "addon_popup_pause_toggle_2026_02_26": {
+    "type": "ADDON_CONTROL_TOGGLE",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-26T18:05:00+09:00",
+    "scope": [
+      "tuff-brg/addon/popup.html",
+      "tuff-brg/addon/popup.js",
+      "tuff-brg/addon/booster.js"
+    ],
+    "request": "ポップアップに一時停止/再開トグルを追加し、コードのインポート等で拡張干渉を止める",
+    "implemented": {
+      "popup_ui": [
+        "ポップアップ上部に `一時停止/再開` トグルボタンを追加",
+        "`状態: 稼働中 / 一時停止中` の表示を追加"
+      ],
+      "state_persistence": [
+        "storage key `TUFF_ADDON_PAUSED` を導入し、トグル状態を `chrome.storage.local` に保存",
+        "popup開閉時に保存状態を復元してボタン表示を同期"
+      ],
+      "runtime_pause_behavior": [
+        "booster側で `TUFF_ADDON_PAUSED` を起動時読み込み + `chrome.storage.onChanged` で即時反映",
+        "一時停止時に DOM注釈処理・送信処理・手動Override送信・コピー用ログ収集を停止",
+        "一時停止時に送信タイマー/WS再接続タイマーをクリアし、既存WS接続をclose",
+        "再開時にWS再接続し監視処理を再開"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/popup.js",
+      "node --check tuff-brg/addon/booster.js",
+      "node --check tuff-brg/addon/background.js"
+    ],
+    "review": {
+      "improvements": [
+        "必要なら options にも同トグルを追加し、popupを開かずに固定設定できるようにすると運用しやすい"
+      ],
+      "unknowns": [
+        "一時停止中に既存DOMへ付与済みタイムスタンプを自動消去する仕様にするか（現状は新規付与停止のみ）"
+      ]
+    }
+  },
+  "addon_extension_error_hotfix_2026_02_27": {
+    "type": "ADDON_HOTFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-27T09:20:00+09:00",
+    "scope": "tuff-brg/addon/booster.js",
+    "symptom": "アドオン読み込み時/実行時エラー（環境差で content script が停止）",
+    "likely_root_cause": [
+      "default selector に `:has(...)` を含んでおり、対応していない実行環境では `querySelectorAll` が例外化する可能性がある。"
+    ],
+    "implemented": {
+      "compat_fix": [
+        "BASE_SELECTORS.default.user/assistant から `:has(...)` を除去し、互換性の高いセレクタのみへ変更"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ],
+    "review": {
+      "improvements": [
+        "セレクタは `querySelectorAll` 直前で try/catch し、無効セレクタ時にフォールバックする防御実装を追加すると再発防止になる。"
+      ],
+      "unknowns": [
+        "実際のエラー文（拡張管理画面の赤字ログ）が未取得のため、他要因が併発している可能性は残る。"
+      ]
+    }
+  },
+  "addon_web_share_warning_mitigation_2026_02_27": {
+    "type": "ADDON_HOTFIX",
+    "status": "APPLIED",
+    "timestamp_iso": "2026-02-27T09:40:00+09:00",
+    "scope": "tuff-brg/addon/booster.js",
+    "symptom": "Gemini上で `Unrecognized feature: 'web-share'` が booster.js の `extractNodeText` 呼び出し近辺で発生",
+    "root_cause_hypothesis": [
+      "`extractNodeText` と `getNodeTextFingerprint` が `cloneNode(true)` を使っており、ページ内スタイル断片を巻き込んで警告を誘発していた可能性が高い。"
+    ],
+    "implemented": {
+      "safe_text_extraction": [
+        "`collectNodeText()` を新設し、TreeWalkerでTEXTノードのみ抽出する方式へ変更",
+        "script/style/noscript/template 配下と booster タイムスタンプ要素を除外",
+        "`extractNodeText()` / `getNodeTextFingerprint()` から cloneNode を撤去"
+      ]
+    },
+    "validation": [
+      "node --check tuff-brg/addon/booster.js"
+    ],
+    "review": {
+      "improvements": [
+        "警告再発時に備え、`selectorFor()` 経由の `querySelectorAll` も try/catch で安全化すると障害耐性が上がる。"
+      ],
+      "unknowns": [
+        "`web-share` 警告の一次発生源が Gemini 本体ログのみの場合、本修正後もコンソール警告自体は残る可能性がある。"
+      ]
+    }
+  },
+  "opencode_install_and_free_server_connect_2026_02_28": {
+    "type": "TOOL_SETUP",
+    "status": "APPLIED_AND_VERIFIED",
+    "timestamp_iso": "2026-02-28T18:40:00+09:00",
+    "request": "OpenCodeをインストールして無料サーバと接続",
+    "implemented": {
+      "installation": [
+        "`npm i -g opencode-ai@latest` を実行",
+        "`opencode-ai 1.2.15` を導入"
+      ],
+      "path_setup": [
+        "`~/.local/bin/opencode` -> `~/.npm-global/bin/opencode` のsymlink作成",
+        "`~/.bashrc` に `~/.npm-global/bin` をPATH追加（未設定時のみ）"
+      ],
+      "free_server_connection": [
+        "`opencode models` で無料モデルを確認 (`opencode/minimax-m2.5-free`, `opencode/trinity-large-preview-free`)",
+        "`opencode run -m opencode/minimax-m2.5-free \"接続テスト...\"` を実行し、応答 `OK` を確認"
+      ]
+    },
+    "validation": [
+      "opencode --version => 1.2.15",
+      "opencode models で free モデル一覧を取得",
+      "opencode run の実応答確認"
+    ],
+    "review": {
+      "improvements": [
+        "既定モデルを無料系に固定したい場合は `~/.config/opencode` の設定追加（またはシェルalias）で `-m opencode/minimax-m2.5-free` を省略可能にできる。"
+      ],
+      "unknowns": [
+        "無料モデルの提供状況・レート制限は将来変更される可能性がある。"
+      ]
+    }
+  },
+  "repo_understanding_2026_03_09": {
+    "status": "completed",
+    "timestamp_iso": "2026-03-09T00:00:00+09:00",
+    "scope": [
+      "workspace_structure",
+      "bridge_runtime_flow",
+      "lightweight_db_flow",
+      "protocol_and_docs_consistency",
+      "build_and_test_scripts"
+    ],
+    "architecture_summary": {
+      "workspace": [
+        "tuff-brg: Axum WebSocket bridge + history/pending HTTP API",
+        "tuff-db(transformer_neo): ingest pipeline + WAL + models + history compiler",
+        "tuff-db/src/lightweight: standalone lightweight TCP daemon + verifier + plain WAL"
+      ],
+      "runtime_flow": [
+        "Addon -> ws://127.0.0.1:8787 へ StreamFragment 送信",
+        "Bridge ingest worker は watch channel で最新fragmentのみ処理",
+        "Fast Path(lightweight verifier) Hit/Mismatchは即時JudgeResult、MismatchはSTOP",
+        "Unknown時は pipeline.ingest(3秒timeout) へフォールスルー",
+        "結果を JudgeResult / ControlCommand として返却し、stream_events.ndjson に追記"
+      ],
+      "history_behavior": [
+        "/history/api/latest は history_out/latest_facts.json を読み、lightweight walをマージ",
+        "/history/api/timeline は history_out/timeline.json + lightweight + stream log をマージ",
+        "history_out が未生成でも default JSON を返す実装"
+      ]
+    },
+    "verified_points": [
+      {
+        "item": "SIGINT/SIGTERM graceful shutdown route",
+        "status": "implemented",
+        "evidence": "tuff-brg/src/main.rs: shutdown_signal() + axum graceful shutdown"
+      },
+      {
+        "item": "INGEST受信/送信分離",
+        "status": "implemented",
+        "evidence": "ws outbound mpsc + ingest worker task + inbound loop分離"
+      },
+      {
+        "item": "Lightweight Tag正規化/MatchMode",
+        "status": "implemented",
+        "evidence": "normalize_tag_key, Contains/Exact, invalid tag reject"
+      },
+      {
+        "item": "提案/承認フロー",
+        "status": "implemented",
+        "evidence": "ProposeFact -> meaning.pending, ApproveFact -> meaning.db反映 + verifier reload"
+      }
+    ],
+    "review_results": {
+      "improvements": [
+        {
+          "id": "IMPR-20260309-01",
+          "severity": "medium",
+          "topic": "ドキュメント整合",
+          "detail": "docs/BUILD_GUIDE.md は /history/api/* が 404 と記載しているが、実装は default JSON 200 を返す。運用手順の誤解を防ぐため更新が必要。"
+        },
+        {
+          "id": "IMPR-20260309-02",
+          "severity": "medium",
+          "topic": "WAL timestamp fidelity",
+          "detail": "merge_lightweight_latest/timeline が lightweight WAL の元時刻を保持せず Utc::now() を付与しているため、履歴の時系列精度が低下する。WALにtimestamp列を追加するか、記録時刻を別保存する方針が望ましい。"
+        },
+        {
+          "id": "IMPR-20260309-03",
+          "severity": "low",
+          "topic": "観測性",
+          "detail": "handle_approve 内の insert_meaning/reload エラーが握りつぶされるため、失敗時ログを残すと運用デバッグが容易になる。"
+        }
+      ],
+      "open_questions": [
+        "watch channelで最新断片のみ処理する設計を正式仕様として固定するか（中間断片欠落を許容するか）。",
+        "lightweight verifier の Mismatch 時に常に STOP する方針を継続するか（警告モード併設の要否）。",
+        "history_out の更新を ingest連動にするか、静的バッチ運用を維持するか。"
+      ]
+    },
+    "validation": {
+      "command": "cargo check",
+      "result": "passed_with_warnings",
+      "warnings_summary": [
+        "unused code in tuff-db/src/lightweight/storage.rs, verifier.rs",
+        "unused AppState.gap_resolver",
+        "unused assignment(reason) in tuff-brg/src/main.rs"
+      ]
+    },
+    "fix_execution_2026_03_09": {
+      "status": "applied_and_verified",
+      "changes": [
+        {
+          "id": "IMPR-20260309-01",
+          "result": "fixed",
+          "files": [
+            "docs/BUILD_GUIDE.md"
+          ],
+          "detail": "/history/api/* の未生成時挙動を 404 記載から 200(default JSON) へ修正"
+        },
+        {
+          "id": "IMPR-20260309-02",
+          "result": "fixed",
+          "files": [
+            "tuff-db/src/lightweight/storage.rs",
+            "tuff-brg/src/main.rs"
+          ],
+          "detail": "lightweight WALを tag,payload,recorded_at,checksum 形式で追記（旧3列互換）。Bridgeのhistory mergeで recorded_at を優先採用"
+        },
+        {
+          "id": "IMPR-20260309-03",
+          "result": "fixed",
+          "files": [
+            "tuff-brg/src/main.rs"
+          ],
+          "detail": "ApproveFact処理で insert_meaning/reload 失敗時にログ出力"
+        }
+      ],
+      "validation": {
+        "command": "cargo check",
+        "result": "passed_with_warnings"
+      }
+    }
+  },
+  "review_results": {
+    "improvements": [
+      {
+        "id": "IMPR-20260309-01",
+        "status": "fixed",
+        "fix": "docs/BUILD_GUIDE.md の /history/api/* 挙動を実装値(200 default JSON)へ修正"
+      },
+      {
+        "id": "IMPR-20260309-02",
+        "status": "fixed",
+        "fix": "lightweight WAL appendを4列化(tag,payload,recorded_at,checksum)し、bridge側でrecorded_atをhistoryへ反映（旧3列WAL互換維持）"
+      },
+      {
+        "id": "IMPR-20260309-03",
+        "status": "fixed",
+        "fix": "handle_approve の insert_meaning/reload失敗をログ出力"
+      }
+    ]
+  },
+  "addon_timestamp_fix_2026_03_09": {
+    "status": "applied",
+    "target": "tuff-brg/addon/booster.js",
+    "request": "USER_TS形式をJST表示へ変更",
+    "changes": [
+      "送信時埋め込みを [USER:YYYY-MM-DD HH:mm:ss(JST)] に変更",
+      "JST固定フォーマット関数 formatJstTimestamp(timeZone=Asia/Tokyo) を追加",
+      "重複判定は USER/USER_TS の双方を許容し後方互換維持",
+      "ログ正規化時のタイムスタンプ除去対象に USER を追加"
+    ],
+    "validation": {
+      "command": "cargo check",
+      "result": "passed_with_warnings"
+    }
+  },
+  "addon_timestamp_fix_2026_03_09_ai_side": {
+    "status": "applied",
+    "target": "tuff-brg/addon/booster.js",
+    "changes": [
+      "AI側インライン時刻を [AI:YYYY-MM-DD HH:mm:ss(JST)] へ変更",
+      "タイムスタンプ正規化除去対象に AI を追加"
+    ]
+  }
+,
+  "pageindex2gpt_phase0_2026_11_21": {
+    "status": "implemented_and_verified_with_blocked_index",
+    "files": [
+      "PageIndex2GPT/README.md",
+      "PageIndex2GPT/docs/architecture.md",
+      "PageIndex2GPT/docs/operations.md",
+      "PageIndex2GPT/scripts/bootstrap.sh",
+      "PageIndex2GPT/scripts/import-logs.py",
+      "PageIndex2GPT/scripts/build-index.py",
+      "PageIndex2GPT/scripts/pack-memory.py",
+      "PageIndex2GPT/tests/test_phase0.py"
+    ],
+    "validation": {
+      "command": "python3 PageIndex2GPT/tests/test_phase0.py && python3 -m py_compile PageIndex2GPT/scripts/*.py",
+      "result": "passed",
+      "details": "byte-preserving import, SHA-256 deduplication, source-map, ZIP pack and required members verified"
+    },
+    "blocked": [
+      "PageIndex official SDK/API execution not configured; recorded as SKIPPED_BLOCKED",
+      "tar.zst GPT/ChatGPT file-read compatibility unverified; ZIP selected"
+    ],
+    "review_notes": [
+      "Current JSON parser supports messages/turns arrays; other JSON schemas remain unknown rather than inferred",
+      "Pack catalog append is idempotent only when the normalized directory is not rebuilt into an existing catalog; future hardening should upsert by pack_id",
+      "Phase 1 DOM restoration is intentionally not implemented"
+    ],
+    "report": "/home/flux/GPTMem/reports/phase0.json"
+  },
+  "pageindex2gpt_phase1_2026_11_21": {
+    "status": "implemented_and_verified_with_blocked_pageindex",
+    "changes": [
+      "ChatGPT Exporter形式の決定論的Parserを追加",
+      "fenced code block内の偽markerを除外",
+      "source-map v2、byte range、body range、node_idを生成",
+      "Phase 1版tar.zst Packを生成し原文SHA-256を再検証"
+    ],
+    "validation": {
+      "message_count": 198,
+      "prompt_count": 100,
+      "response_count": 98,
+      "source_sha256": "01bf27fa29b96f7a29443a765e46ab516c4dde2e70b924e7424631755986f913",
+      "archive": "/home/flux/GPTMem/packs/conversation-memory-01bf27fa29b96f7a-phase1.tar.zst",
+      "archive_sha256": "a95ebb8a013cf741d96a4406ef5b97d42e79a176ce3310361274aebe81246904",
+      "tests": "passed"
+    },
+    "blocked": ["PageIndex official SDK/API execution not configured"],
+    "warning": "実ログはPrompt 100件・Response 98件で不均衡。欠落補完はしていない。",
+    "report": "/home/flux/GPTMem/reports/phase1.json"
+  },
+  "pageindex2gpt_phase2_2026_11_21": {
+    "status": "implemented_and_verified",
+    "changes": [
+      "原文/source-mapを変更せず、pageindex配下に派生Tree/mapping/environmentを生成",
+      "pageindex2gpt-local名前空間の198ノードTreeを生成",
+      "pageindex node IDとstable node_idを分離し、byte rangeで対応付け",
+      "node_id/ordinal/literalによる原文抽出CLIを追加",
+      "公式PageIndex 0.7.4を隔離venvへ導入し、md_to_tree()で実Treeを生成",
+      "公式Tree入りのPhase 2 Packを作成し、原文SHA-256と内包ファイルを検証"
+    ],
+    "validation": {
+      "tree_nodes": 198,
+      "literal_cases": ["世界79起動", "Muse", "計算型SSD"],
+      "pageindex_version": "0.7.4",
+      "official_tree": "/home/flux/GPTMem/pageindex/01bf27fa29b96f7a/official-tree.json",
+      "pack": "/home/flux/GPTMem/packs/conversation-memory-01bf27fa29b96f7a-phase2-official.tar.zst",
+      "pack_sha256": "f5df58ca99a08925a5e57d37fc0dfaff34b72bf0d34df08193a9ffdd7ad38c28",
+      "tests": "passed"
+    },
+    "blocked": [
+      "LLM意味検索はSKIPPED_NOT_AUTHORIZED"
+    ],
+    "report": "/home/flux/GPTMem/reports/phase2.json"
+  },
+  "pageindex2gpt_phase2_recovery_publish_2026_11_22": {
+    "execution_timestamp": "2026-11-22",
+    "actual_local_source_path": "/mnt/thpdoc/Develop/TUFF-BRG-ECO/PageIndex2GPT",
+    "actual_pack_path": "/home/flux/GPTMem/packs/conversation-memory-01bf27fa29b96f7a-phase2.tar.zst",
+    "phase2_pack_sha256": "cedea7b8133552ce3e005d84292ee974892193723d7c1b5d0e63ee928cd4afd4",
+    "source_sha256": "01bf27fa29b96f7a29443a765e46ab516c4dde2e70b924e7424631755986f913",
+    "message_counts": {"all": 198, "prompt": 100, "response": 98},
+    "verification_results": {
+      "pack_integrity": "PASS",
+      "raw_source_sha256_and_size": "PASS",
+      "sha256sums": "PASS",
+      "archive_path_safety": "PASS",
+      "source_map_ranges": "PASS",
+      "query_e2e_世界79起動": "PASS",
+      "query_e2e_Muse": "PASS",
+      "query_e2e_計算型SSD": "PASS",
+      "official_pageindex": "PASS",
+      "clone_reproducibility": "PASS",
+      "no_private_payload_pushed": "PASS"
+    },
+    "official_pageindex_status": "PASS",
+    "child_remote": "https://github.com/elementary-particles-Man/PageIndex2GPT.git",
+    "child_commit": "ed69e913be11aed670871b020a9deed29eb3279d",
+    "parent_commit": "969defe656146d7961d25b6d642e8925d4fc1e75",
+    "submodule_gitlink": "ed69e913be11aed670871b020a9deed29eb3279d",
+    "pull_request": "https://github.com/elementary-particles-Man/TUFF-BRG-ECO/pull/1",
+    "clone_test": "PASS",
+    "commands_run": [
+      "git status --porcelain=v1",
+      "git remote -v",
+      "git branch --show-current",
+      "sha256sum /home/flux/GPTMem/packs/*phase2*.tar.zst",
+      "tar --zstd -tf/-xf and sha256sum -c integrity/SHA256SUMS",
+      "python3 PageIndex2GPT/scripts/query.py --source-sha ... --literal 世界79起動|Muse|計算型SSD",
+      "git clone --recurse-submodules --branch chore/add-pageindex2gpt-submodule ...",
+      "python3 PageIndex2GPT/tests/test_phase1.py"
+    ],
+    "blockers": [
+      "PR #1は作成済みだが、親mainへのmergeは未実施"
+    ],
+    "private_evidence": "/home/flux/GPTMem/audits/phase2-recovery-20261122.json"
   }
 }
