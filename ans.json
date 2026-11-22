@@ -1529,6 +1529,7 @@
     "external_llm_ingest": "BLOCKED: external AI/backend configuration unavailable; no Dummy WHITE fallback",
     "response_sha256": "7e099a0d5daf309d39340551dcd7ce3b401fbfff3161dc0b9ed5e0488e86964c",
     "child_commit": "db15dc3f7cd4351acac48dd95fd6437b0f2f9584",
+    "parent_commit": "2153f328169fc17eacbc04ed13cf910636d3fb74",
     "private_report": "/home/flux/GPTMem/reports/phase3.json",
     "raw_response": "/home/flux/GPTMem/audits/phase3-ai-response-codex-r2.txt",
     "completion_reason": "APIなしlocal ingestの後段処理完了はPASS。外部LLM経路のみBLOCKED。"
