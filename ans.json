@@ -1533,5 +1533,30 @@
     "private_report": "/home/flux/GPTMem/reports/phase3.json",
     "raw_response": "/home/flux/GPTMem/audits/phase3-ai-response-codex-r2.txt",
     "completion_reason": "APIなしlocal ingestの後段処理完了はPASS。外部LLM経路のみBLOCKED。"
+  },
+  "pageindex2gpt_phase3_e2e_completion_r4_2026_11_23": {
+    "status": "PARTIAL_PASS_EXTERNAL_E2E_BLOCKED",
+    "changed_files": ["tuff-brg/src/main.rs", "ans.json"],
+    "implementation": "watchによる中間イベント上書きを有界mpscへ変更し、conversation_id単位のsequence_number順序確認と重複・逆順スキップを追加。受信側はキュー満杯時に背圧する。",
+    "tests": {
+      "cargo_check": "PASS",
+      "cargo_test": "PASS (0 tests defined)",
+      "phase0_phase1_phase2_phase3_response_direct": "PASS",
+      "regression_check": "BLOCKED: 127.0.0.1:8787 is occupied by external headroom PID 1556; websocket connection unavailable",
+      "live_fire": "BLOCKED: same external port owner",
+      "official_pageindex": "BLOCKED: pytest not installed; direct test requires pageindex pytest fixture execution",
+      "cargo_fmt_check": "FAIL_PREEXISTING: repository-wide formatting differences; no mass-format applied",
+      "git_diff_check": "PASS"
+    },
+    "source_integrity": "PASS for available local phase tests; 380000-byte fresh E2E not re-executed",
+    "continuous_event_integrity": "IMPLEMENTED, runtime E2E BLOCKED by port occupancy",
+    "lose_lose_regression": "PASS for direct phase3 scorer; real AI response remains BLOCKED/unverified",
+    "external_llm": "BLOCKED: no configured valid external LLM path was used",
+    "design_owner_decisions": ["Confirm whether per-connection sequence reset is acceptable across reconnects", "Provide an isolated/approved bridge port or stop external headroom before runtime E2E"],
+    "child_commit": "db15dc3f7cd4351acac48dd95fd6437b0f2f9584",
+    "parent_commit_before": "2d7fb275b8119dd753c24e4c2e03595ba45b4046",
+    "parent_commit_after": "PENDING_GITLINK_COMMIT",
+    "parent_pr_head_remote": "NOT_YET_PUSHED",
+    "remaining_conditions": ["Run runtime 380000-byte and multi-event E2E with free 8787", "Verify WAL readback/count correspondence", "Push child then parent gitlink and verify remote PR HEAD", "Update private phase3.json without adding private source/pack to Git"]
   }
 }
