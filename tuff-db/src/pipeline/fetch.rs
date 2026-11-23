@@ -31,6 +31,9 @@ impl WebFetcher {
 #[async_trait]
 impl FactFetcher for WebFetcher {
     async fn fetch(&self, _fragment: &str) -> anyhow::Result<Vec<RequiredFact>> {
+        if env::var("TUFF_EXTERNAL_FETCH").ok().as_deref() != Some("1") {
+            anyhow::bail!("external_fetch_disabled: set TUFF_EXTERNAL_FETCH=1 to permit WebFetcher")
+        }
         let url = Self::target_url()?;
         let raw_html = self.client.get(url.clone()).send().await?.text().await?;
         let clean_text = html2text::from_read(raw_html.as_bytes(), 80);

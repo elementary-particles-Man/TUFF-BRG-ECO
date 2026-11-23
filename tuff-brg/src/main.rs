@@ -10,7 +10,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use chrono::Utc;
 use dotenv::dotenv;
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -32,7 +32,7 @@ use transformer_neo::lightweight::{
 use transformer_neo::models::{AgentIdentity, Id, IsoDateTime, ManualOverride, VerificationStatus};
 use transformer_neo::pipeline::{
     AbstractGenerator, ClaimVerifier, DummyAbstractGenerator, DummySplitter, DummyVerifier,
-    IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier,
+    IngestPipeline, LlmAbstractor, LlmGapResolver, LlmVerifier, LocalFetcher, LocalVerifier,
     WebFetcher,
 };
 
@@ -52,6 +52,7 @@ struct PendingFact {
 
 enum Verifier {
     Dummy(DummyVerifier),
+    Local(LocalVerifier),
     Llm(LlmVerifier),
 }
 
@@ -64,6 +65,7 @@ impl ClaimVerifier for Verifier {
     ) -> anyhow::Result<transformer_neo::pipeline::traits::VerificationResult> {
         match self {
             Verifier::Dummy(v) => v.verify(fragment, facts).await,
+            Verifier::Local(v) => v.verify(fragment, facts).await,
             Verifier::Llm(v) => v.verify(fragment, facts).await,
         }
     }
@@ -72,6 +74,21 @@ impl ClaimVerifier for Verifier {
 enum Abstractor {
     Dummy(DummyAbstractGenerator),
     Llm(LlmAbstractor),
+}
+
+enum Fetcher {
+    Local(LocalFetcher),
+    Web(WebFetcher),
+}
+
+#[async_trait]
+impl transformer_neo::pipeline::FactFetcher for Fetcher {
+    async fn fetch(&self, fragment: &str) -> anyhow::Result<Vec<transformer_neo::models::RequiredFact>> {
+        match self {
+            Fetcher::Local(v) => v.fetch(fragment).await,
+            Fetcher::Web(v) => v.fetch(fragment).await,
+        }
+    }
 }
 
 #[async_trait]
@@ -109,7 +126,7 @@ struct AppState {
     pipeline: Arc<
         IngestPipeline<
             DummySplitter,
-            WebFetcher,
+            Fetcher,
             Verifier,
             Abstractor,
             TuffEngine,
@@ -147,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
 
     let verifier = match api_key.as_deref() {
         Some(key) if valid_api_key(key) => Verifier::Llm(LlmVerifier::new(key, &model)),
-        _ => Verifier::Dummy(DummyVerifier),
+        _ => Verifier::Local(LocalVerifier),
     };
 
     let abstractor = match api_key.as_deref() {
@@ -160,9 +177,18 @@ async fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    let local_mode = env::var("TUFF_INGEST_MODE").ok().as_deref() == Some("local")
+        || env::var("TUFF_EXTERNAL_FETCH").ok().as_deref() != Some("1")
+        || !api_key.as_deref().is_some_and(valid_api_key);
+    let fetcher = if local_mode {
+        Fetcher::Local(LocalFetcher)
+    } else {
+        Fetcher::Web(WebFetcher::new())
+    };
+
     let pipeline = IngestPipeline {
         splitter: DummySplitter,
-        fetcher: WebFetcher::new(),
+        fetcher,
         verifier,
         generator: abstractor,
         db: engine,
@@ -288,6 +314,8 @@ fn log_line(msg: &str) {
 
 #[derive(Debug, Clone, Default)]
 struct FragmentEnvelope {
+    conversation_id: String,
+    sequence_number: u64,
     fragment: String,
     event_ts: Option<String>,
     received_ts: String,
@@ -314,7 +342,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     log_line("WS: client connected");
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = mpsc::channel::<WsMessage>(256);
-    let (frag_tx, mut frag_rx) = watch::channel(FragmentEnvelope::default());
+    // mpsc preserves every received event.  A watch channel would silently
+    // overwrite intermediate fragments while INGEST is busy.
+    let (frag_tx, mut frag_rx) = mpsc::channel::<FragmentEnvelope>(256);
 
     // outbound pump
     let tx_task = tokio::spawn(async move {
@@ -329,12 +359,22 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let state_for_worker = state.clone();
     let tx_for_worker = tx.clone();
     let ingest_task = tokio::spawn(async move {
-        while frag_rx.changed().await.is_ok() {
-            let envelope = frag_rx.borrow().clone();
+        let mut last_sequence = std::collections::HashMap::<String, u64>::new();
+        while let Some(envelope) = frag_rx.recv().await {
             let fragment = envelope.fragment.clone();
             if fragment.is_empty() {
                 continue;
             }
+            if let Some(previous) = last_sequence.get(&envelope.conversation_id) {
+                if envelope.sequence_number <= *previous {
+                    log_line(&format!(
+                        "INGEST: duplicate_or_out_of_order conversation_id={} sequence_number={}",
+                        envelope.conversation_id, envelope.sequence_number
+                    ));
+                    continue;
+                }
+            }
+            last_sequence.insert(envelope.conversation_id.clone(), envelope.sequence_number);
             log_line(&format!(
                 "INGEST: start event_ts={} received_ts={} role={}",
                 envelope
@@ -423,12 +463,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
             let ops = match ingest_result {
                 Ok(Ok(v)) => v,
-                Ok(Err(_)) => {
-                    log_line("INGEST: error");
+                Ok(Err(error)) => {
+                    log_line(&format!("INGEST: error stage=pipeline cause={:#}", error));
                     continue;
                 }
                 Err(_) => {
-                    log_line("INGEST: timeout");
+                    log_line("INGEST: timeout stage=pipeline timeout_ms=3000");
                     continue;
                 }
             };
@@ -443,8 +483,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 status = outcome.status;
                 confidence = outcome.confidence;
                 evidence_count = outcome.evidence_count;
+                let source = if outcome.reason.starts_with("local ingest") {
+                    "Local"
+                } else {
+                    "LLM"
+                };
                 reason = enrich_reason_with_timestamps(
-                    &format!("source=LLM {}", outcome.reason),
+                    &format!("source={} {}", source, outcome.reason),
                     &envelope,
                 );
                 if let OpKind::InsertAbstract { abstract_ } = &outcome.op.kind {
@@ -566,6 +611,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         if let Message::StreamFragment { payload, .. } = parsed {
             log_line("WS: StreamFragment received");
             let StreamFragmentPayload {
+                conversation_id,
+                sequence_number,
                 fragment,
                 event_ts,
                 role,
@@ -581,6 +628,8 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             )
             .await;
             let _ = frag_tx.send(FragmentEnvelope {
+                conversation_id,
+                sequence_number,
                 fragment,
                 event_ts,
                 received_ts: Utc::now().to_rfc3339(),

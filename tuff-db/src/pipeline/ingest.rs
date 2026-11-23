@@ -1,5 +1,6 @@
 use crate::db::{OpLog, TuffDb};
 use crate::models::Abstract;
+use anyhow::Context;
 use crate::pipeline::traits::{
     AbstractGenerator, ClaimVerifier, FactFetcher, InputSplitter, VerificationResult,
 };
@@ -39,18 +40,18 @@ where
         let parts = self.splitter.split(input);
         let mut ops = Vec::new();
         for fragment in parts {
-            let facts = self.fetcher.fetch(&fragment).await?;
+            let facts = self.fetcher.fetch(&fragment).await.context("stage=fetch")?;
             let evidence_count = facts.iter().map(|f| f.evidence.len()).sum();
             let VerificationResult {
                 status,
                 confidence,
                 reason,
-            } = self.verifier.verify(&fragment, &facts).await?;
+            } = self.verifier.verify(&fragment, &facts).await.context("stage=verify")?;
             let abstract_ = self
                 .generator
                 .generate(&fragment, &facts, status)
-                .await?;
-            let op = self.db.append_abstract(abstract_).await?;
+                .await.context("stage=abstract")?;
+            let op = self.db.append_abstract(abstract_).await.context("stage=db_append")?;
             ops.push(IngestOutcome {
                 op,
                 status,

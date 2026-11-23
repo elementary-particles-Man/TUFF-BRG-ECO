@@ -18,6 +18,36 @@ impl InputSplitter for DummySplitter {
 
 pub struct DummyFetcher;
 
+pub struct LocalFetcher;
+
+#[async_trait]
+impl FactFetcher for LocalFetcher {
+    async fn fetch(&self, fragment: &str) -> anyhow::Result<Vec<RequiredFact>> {
+        Ok(vec![RequiredFact {
+            key: "local_input".to_string(),
+            value: fragment.to_string(),
+            evidence: Vec::new(),
+        }])
+    }
+}
+
+pub struct LocalVerifier;
+
+#[async_trait]
+impl ClaimVerifier for LocalVerifier {
+    async fn verify(
+        &self,
+        _fragment: &str,
+        _facts: &[RequiredFact],
+    ) -> anyhow::Result<VerificationResult> {
+        Ok(VerificationResult {
+            status: VerificationStatus::GrayMid,
+            confidence: 0.0,
+            reason: "local ingest only; not externally verified".to_string(),
+        })
+    }
+}
+
 #[async_trait]
 impl FactFetcher for DummyFetcher {
     async fn fetch(&self, fragment: &str) -> anyhow::Result<Vec<RequiredFact>> {
