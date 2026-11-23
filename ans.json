@@ -1556,7 +1556,7 @@
     "child_commit": "db15dc3f7cd4351acac48dd95fd6437b0f2f9584",
     "parent_commit_before": "2d7fb275b8119dd753c24e4c2e03595ba45b4046",
     "parent_commit_after": "e44c547597a79d66af8fcdaec4268b0e1dce5cb9",
-    "parent_pr_head_remote": "PENDING_FINAL_REPORT_COMMIT",
+    "parent_pr_head_remote": "568e3c6d4e02eea4bf17919aaf4d59e50c1e403e",
     "remaining_conditions": ["Run runtime 380000-byte and multi-event E2E with free 8787", "Verify WAL readback/count correspondence", "Update private phase3.json without adding private source/pack to Git"]
   }
 }
